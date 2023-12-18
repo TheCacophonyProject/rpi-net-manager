@@ -1,0 +1,12 @@
+[Unit]
+Description=Raspberry Pi Network Manager
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/rpi-network-manager
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
