@@ -8,26 +8,23 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-)
 
-type networkState string
-
-const (
-	NS_WIFI          networkState = "WIFI"
-	NS_WIFI_SETUP    networkState = "WIFI_SETUP"
-	NS_HOTSPOT       networkState = "HOTSPOT"
-	NS_HOTSPOT_SETUP networkState = "HOTSPOT_SETUP"
+	netmanagerclient "github.com/TheCacophonyProject/rpi-net-manager/netmanagerclient"
 )
 
 type networkHandler struct {
-	state networkState
+	state netmanagerclient.NetworkState
 }
 
-func (nh *networkHandler) setState(ns networkState) {
+func (nh *networkHandler) setState(ns netmanagerclient.NetworkState) {
+	//TODO thread safety
 	if nh.state != ns {
 		log.Printf("State changed from %s to %s", nh.state, ns)
 		nh.state = ns
-		sendNewStateSignal(string(ns))
+		err := sendNewNetworkState(ns)
+		if err != nil {
+			log.Println(err)
+		}
 	}
 }
 
@@ -36,14 +33,14 @@ func (nh *networkHandler) reconfigureWifi() error {
 		return fmt.Errorf("busy")
 	}
 	log.Println("Reconfigure wifi network.")
-	if nh.state != NS_WIFI {
+	if nh.state != netmanagerclient.NS_WIFI {
 		log.Println("Setting up wifi before reconfiguring.")
 		err := nh.setupWifi()
 		if err != nil {
 			return err
 		}
 	}
-	nh.setState(NS_WIFI_SETUP)
+	nh.setState(netmanagerclient.NS_WIFI_SETUP)
 	if err := run("wpa_cli", "-i", "wlan0", "reconfigure"); err != nil {
 		return err
 	}
@@ -56,7 +53,7 @@ func (nh *networkHandler) reconfigureWifi() error {
 		return nh.setupHotspot()
 	}
 	log.Println("WIFI connected after reconfigure.")
-	nh.setState(NS_WIFI)
+	nh.setState(netmanagerclient.NS_WIFI)
 	return nil
 }
 
@@ -192,14 +189,14 @@ func initialiseHotspot() error {
 */
 
 func (nh *networkHandler) busy() bool {
-	return nh.state == NS_WIFI_SETUP || nh.state == NS_HOTSPOT_SETUP
+	return nh.state == netmanagerclient.NS_WIFI_SETUP || nh.state == netmanagerclient.NS_HOTSPOT_SETUP
 }
 
 func (nh *networkHandler) setupWifiWithRollback() error {
 	if nh.busy() {
 		return fmt.Errorf("busy")
 	}
-	if nh.state != NS_WIFI {
+	if nh.state != netmanagerclient.NS_WIFI {
 		err := nh.setupWifi()
 		if err != nil {
 			return err
@@ -222,7 +219,7 @@ func (nh *networkHandler) setupHotspot() error {
 	if nh.busy() {
 		return fmt.Errorf("busy")
 	}
-	nh.setState(NS_HOTSPOT_SETUP)
+	nh.setState(netmanagerclient.NS_HOTSPOT_SETUP)
 	log.Println("Setting up network for hosting a hotspot.")
 
 	if err := run("wpa_cli", "-i", "wlan0", "disconnect"); err != nil {
@@ -268,7 +265,7 @@ func (nh *networkHandler) setupHotspot() error {
 	if err := run("systemctl", "restart", "hostapd"); err != nil {
 		return err
 	}
-	nh.setState(NS_HOTSPOT)
+	nh.setState(netmanagerclient.NS_HOTSPOT)
 	return nil
 }
 
@@ -285,7 +282,7 @@ func run(args ...string) error {
 // setupWifi will set up the wifi network settings for connecting to wifi networks.
 // This includes stopping the hotspot.
 func (nh *networkHandler) setupWifi() error {
-	nh.setState(NS_WIFI_SETUP)
+	nh.setState(netmanagerclient.NS_WIFI_SETUP)
 	log.Println("Setting up network for connecting to Wifi networks.")
 	log.Println("Setting up DHCP config for connecting to wifi networks.")
 	if err := setDHCPMode(dhcpModeWifi); err != nil {
@@ -326,7 +323,7 @@ func (nh *networkHandler) setupWifi() error {
 		return err
 	}
 
-	nh.setState(NS_WIFI)
+	nh.setState(netmanagerclient.NS_WIFI)
 	return nil
 }
 

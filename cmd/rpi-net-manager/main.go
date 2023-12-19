@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
+	netmanagerclient "github.com/TheCacophonyProject/rpi-net-manager/netmanagerclient"
 	"github.com/alexflint/go-arg"
 )
 
@@ -23,18 +25,22 @@ type EnableHotspot struct {
 type EnableWifi struct {
 	Force bool `arg:"--force" help:"force enable wifi"`
 }
+type ReadState struct {
+	FollowUpdates bool `arg:"--follow-updates" help:"keep on reading the state as it updates instead of just once"`
+}
+type subcommand struct{}
 
 type Args struct {
-	Service              bool           `arg:"--service" help:"start service"`
-	ReadState            bool           `arg:"--read-state" help:"read the state of the network"`
-	ReconfigureWifi      bool           `arg:"--reconfigure-wifi" help:"reconfigure the wifi network"`
-	AddNetwork           *AddNetwork    `arg:"subcommand:add-network" help:"add a network"`
-	RemoveNetwork        *RemoveNetwork `arg:"subcommand:remove-network" help:"remove a network"`
-	EnableWifi           *EnableWifi    `arg:"--enable-wifi" help:"enable wifi"`
-	EnableHotspot        *EnableHotspot `arg:"--enable-hotspot" help:"enable hotspot"`
-	ShowNetworks         bool           `arg:"--show-networks" help:"show available networks"`                        //TODO
-	IsWifiConnected      bool           `arg:"--is-wifi-connected" help:"check if wifi is connected"`                 //TODO
-	ShowConnectedDevices bool           `arg:"--show-connected-devices" help:"show connected devices on the hotspot"` //TODO
+	Service              *subcommand    `arg:"subcommand" help:"start service"`
+	ReadState            *ReadState     `arg:"subcommand:read-state" help:"read the state of the network"`
+	ReconfigureWifi      *subcommand    `arg:"subcommand" help:"reconfigure the wifi network"`
+	AddNetwork           *AddNetwork    `arg:"subcommand" help:"add a network"`
+	RemoveNetwork        *RemoveNetwork `arg:"subcommand" help:"remove a network"`
+	EnableWifi           *EnableWifi    `arg:"subcommand" help:"enable wifi"`
+	EnableHotspot        *EnableHotspot `arg:"subcommand" help:"enable hotspot"`
+	ShowNetworks         *subcommand    `arg:"subcommand" help:"show available networks"`               //TODO
+	ShowConnectedDevices *subcommand    `arg:"subcommand" help:"show connected devices on the hotspot"` //TODO
+	ModemStatus          *subcommand    `arg:"subcommand" help:"show modem status"`                     //TODO
 }
 
 func (Args) Version() string {
@@ -59,11 +65,17 @@ func runMain() error {
 	args := procArgs()
 	log.SetFlags(0)
 
-	if args.Service {
-		return startService()
-	} else if args.ReadState {
-		return readState()
-	} else if args.ReconfigureWifi {
+	if args.Service != nil {
+		if err := startService(); err != nil {
+			return err
+		}
+		// Block the goroutine
+		quit := make(chan struct{})
+		<-quit
+		return nil
+	} else if args.ReadState != nil {
+		return readState(args)
+	} else if args.ReconfigureWifi != nil {
 		return reconfigureWifi()
 	} else if args.AddNetwork != nil {
 		return addNetwork(args.AddNetwork.SSID, args.AddNetwork.Pass)
@@ -79,21 +91,65 @@ func runMain() error {
 }
 
 func startService() error {
-	log.Println("Running service.")
-	//TODO
+	nh := &networkHandler{}
+	if err := startDBusService(nh); err != nil {
+		return err
+	}
+	hotspotUsageTimeout := 1 * time.Minute
+	log.Println("Setting up wifi.")
+	if err := nh.setupWifi(); err != nil {
+		log.Println("Failed to setup wifi:", err)
+		return nil
+	}
+
+	log.Println("Checking if device is connected to a network.")
+	connected, err := waitAndCheckIfConnectedToNetwork()
+	if err != nil {
+		log.Println("Error checking if device connected to network:", err)
+		return nil
+	}
+	if connected {
+		log.Println("Connected to network. Not starting up hotspot.")
+		return nil
+	}
+
+	log.Println("Starting hotspot")
+	if err := nh.setupHotspot(); err != nil {
+		log.Println("Failed to setup hotspot:", err)
+		return nil
+	}
+	hotspotUsageTimer := time.NewTimer(hotspotUsageTimeout)
+	<-hotspotUsageTimer.C // Hotspot has not been used for a while, stop it.
+	log.Printf("No API usage for %s, stopping hotspot.", hotspotUsageTimeout)
+	if err := nh.setupWifi(); err != nil { // Setting up
+		log.Println("Failed to stop hotspot:", err)
+	}
 	return nil
 }
 
-func readState() error {
+func readState(args Args) error {
 	log.Println("Reading state.")
-	//TODO
+	state, err := netmanagerclient.ReadState()
+	if err != nil {
+		return nil
+	}
+	log.Println(state)
+	if args.ReadState.FollowUpdates {
+		stateChan, done, err := netmanagerclient.GetStateChanges()
+		defer close(done)
+		if err != nil {
+			return err
+		}
+		for state = range stateChan {
+			log.Println(time.Now().Format(time.TimeOnly), state)
+		}
+	}
 	return nil
 }
 
 func reconfigureWifi() error {
 	log.Println("Reconfiguring wifi.")
-	//TODO
-	return nil
+	return netmanagerclient.ReconfigureWifi()
 }
 
 func addNetwork(ssid, pass string) error {
@@ -110,13 +166,10 @@ func removeNetwork(ssid string) error {
 
 func enableWifi(args Args) error {
 	log.Println("Enabling wifi.")
-
-	//TODO
-	return nil
+	return netmanagerclient.EnableWifi(args.EnableWifi.Force)
 }
 
 func enableHotspot(args Args) error {
 	log.Println("Enabling hotspot.")
-	//TODO
-	return nil
+	return netmanagerclient.EnableHotspot(args.EnableHotspot.Force)
 }
