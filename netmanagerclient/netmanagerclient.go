@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os/exec"
+	"regexp"
+	"strings"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -148,4 +151,47 @@ func GetStateChanges() (chan NetworkState, chan<- struct{}, error) {
 	}()
 
 	return stateChan, done, nil
+}
+
+type WiFiNetwork struct {
+	SSID    string
+	Quality string
+}
+
+func ListAvailableWiFiNetworks() ([]WiFiNetwork, error) {
+	cmd := exec.Command("sudo", "iwlist", "wlan0", "scan")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	networks := []WiFiNetwork{}
+	lines := strings.Split(string(output), "\n")
+	network := WiFiNetwork{}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Cell") {
+			network = WiFiNetwork{}
+		}
+		if strings.HasPrefix(line, "ESSID") {
+			matches := regexp.MustCompile(`ESSID:"(.*)"`).FindStringSubmatch(line)
+			if len(matches) == 2 {
+				network.SSID = matches[1]
+				if network.SSID != "" {
+					networks = append(networks, network)
+				}
+			} else {
+				log.Println(matches)
+				log.Println("Failed to parse SSID:", line)
+			}
+		}
+		if strings.HasPrefix(line, "Quality") {
+			matches := regexp.MustCompile(`Quality=([^ ]+)`).FindStringSubmatch(line)
+			if len(matches) == 2 {
+				network.Quality = matches[1]
+			} else {
+				log.Println("Failed to parse Quality:", line)
+			}
+		}
+	}
+	return networks, nil
 }

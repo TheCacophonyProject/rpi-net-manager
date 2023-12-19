@@ -31,16 +31,16 @@ type ReadState struct {
 type subcommand struct{}
 
 type Args struct {
-	Service              *subcommand    `arg:"subcommand" help:"start service"`
+	Service              *subcommand    `arg:"subcommand:service" help:"start service"`
 	ReadState            *ReadState     `arg:"subcommand:read-state" help:"read the state of the network"`
-	ReconfigureWifi      *subcommand    `arg:"subcommand" help:"reconfigure the wifi network"`
-	AddNetwork           *AddNetwork    `arg:"subcommand" help:"add a network"`
-	RemoveNetwork        *RemoveNetwork `arg:"subcommand" help:"remove a network"`
-	EnableWifi           *EnableWifi    `arg:"subcommand" help:"enable wifi"`
-	EnableHotspot        *EnableHotspot `arg:"subcommand" help:"enable hotspot"`
-	ShowNetworks         *subcommand    `arg:"subcommand" help:"show available networks"`               //TODO
-	ShowConnectedDevices *subcommand    `arg:"subcommand" help:"show connected devices on the hotspot"` //TODO
-	ModemStatus          *subcommand    `arg:"subcommand" help:"show modem status"`                     //TODO
+	ReconfigureWifi      *subcommand    `arg:"subcommand:reconfigure-wifi" help:"reconfigure the wifi network"`
+	AddNetwork           *AddNetwork    `arg:"subcommand:add-network" help:"add a network"`
+	RemoveNetwork        *RemoveNetwork `arg:"subcommand:remove-network" help:"remove a network"`
+	EnableWifi           *EnableWifi    `arg:"subcommand:enable-wifi" help:"enable wifi"`
+	EnableHotspot        *EnableHotspot `arg:"subcommand:enable-hotspot" help:"enable hotspot"`
+	ScanNetwork          *subcommand    `arg:"subcommand:scan-network" help:"show available networks"`
+	ShowConnectedDevices *subcommand    `arg:"subcommand:show-connected-devices" help:"show connected devices on the hotspot"` //TODO
+	ModemStatus          *subcommand    `arg:"subcommand:modem-status" help:"show modem status"`                               //TODO
 }
 
 func (Args) Version() string {
@@ -85,6 +85,8 @@ func runMain() error {
 		return enableWifi(args)
 	} else if args.EnableHotspot != nil {
 		return enableHotspot(args)
+	} else if args.ScanNetwork != nil {
+		return scanNetwork()
 	} else {
 		return fmt.Errorf("no command given, use --help for usage")
 	}
@@ -172,4 +174,15 @@ func enableWifi(args Args) error {
 func enableHotspot(args Args) error {
 	log.Println("Enabling hotspot.")
 	return netmanagerclient.EnableHotspot(args.EnableHotspot.Force)
+}
+
+func scanNetwork() error {
+	networks, err := netmanagerclient.ListAvailableWiFiNetworks()
+	if err != nil {
+		return err
+	}
+	for _, network := range networks {
+		log.Printf("SSID: '%s', Quality: '%s'", network.SSID, network.Quality)
+	}
+	return nil
 }
