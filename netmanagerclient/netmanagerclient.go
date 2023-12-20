@@ -204,8 +204,6 @@ func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
 
 // addWifiNetwork adds a new WiFi network with the given SSID and password.
 func AddWifiNetwork(ssid, password string) error {
-	//TODO Check the outputs of the commands to check that they ran properly
-	// This is a basic implementation. You might need to modify it based on your wpa_supplicant setup
 	cmd := exec.Command("wpa_cli", "-i", "wlan0", "add_network")
 	networkID, err := cmd.Output()
 	id := strings.TrimSpace(string(networkID))
