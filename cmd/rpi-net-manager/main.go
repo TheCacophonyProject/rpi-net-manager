@@ -34,13 +34,14 @@ type Args struct {
 	Service              *subcommand    `arg:"subcommand:service" help:"start service"`
 	ReadState            *ReadState     `arg:"subcommand:read-state" help:"read the state of the network"`
 	ReconfigureWifi      *subcommand    `arg:"subcommand:reconfigure-wifi" help:"reconfigure the wifi network"`
+	SavedWifiNetworks    *subcommand    `arg:"subcommand:saved-wifi-networks" help:"show saved wifi networks"`
 	AddWifiNetwork       *AddNetwork    `arg:"subcommand:add-wifi-network" help:"add a network"`
 	RemoveWifiNetwork    *RemoveNetwork `arg:"subcommand:remove-wifi-network" help:"remove a network"`
 	EnableWifi           *EnableWifi    `arg:"subcommand:enable-wifi" help:"enable wifi"`
 	EnableHotspot        *EnableHotspot `arg:"subcommand:enable-hotspot" help:"enable hotspot"`
 	ScanNetwork          *subcommand    `arg:"subcommand:scan-network" help:"show available networks"`
-	ShowConnectedDevices *subcommand    `arg:"subcommand:show-connected-devices" help:"show connected devices on the hotspot"` //TODO
-	ModemStatus          *subcommand    `arg:"subcommand:modem-status" help:"show modem status"`                               //TODO
+	ShowConnectedDevices *subcommand    `arg:"subcommand:show-connected-devices" help:"show connected devices on the hotspot //TODO"` //TODO
+	ModemStatus          *subcommand    `arg:"subcommand:modem-status" help:"show modem status //TODO"`                               //TODO
 }
 
 func (Args) Version() string {
@@ -77,6 +78,8 @@ func runMain() error {
 		return readState(args)
 	} else if args.ReconfigureWifi != nil {
 		return reconfigureWifi()
+	} else if args.SavedWifiNetworks != nil {
+		return savedWifiNetworks()
 	} else if args.AddWifiNetwork != nil {
 		return addWifiNetwork(args.AddWifiNetwork.SSID, args.AddWifiNetwork.Pass)
 	} else if args.RemoveWifiNetwork != nil {
@@ -154,6 +157,18 @@ func reconfigureWifi() error {
 	return netmanagerclient.ReconfigureWifi()
 }
 
+func savedWifiNetworks() error {
+	log.Println("Listing saved wifi networks.")
+	networks, err := netmanagerclient.ListSavedWifiNetworks()
+	if err != nil {
+		return err
+	}
+	for _, network := range networks {
+		log.Println(network)
+	}
+	return nil
+}
+
 func addWifiNetwork(ssid, pass string) error {
 	log.Println("Adding network. SSID: ", ssid, " Pass: ", pass)
 	return netmanagerclient.AddWifiNetwork(ssid, pass)
@@ -161,8 +176,7 @@ func addWifiNetwork(ssid, pass string) error {
 
 func removeWifiNetwork(ssid string) error {
 	log.Println("Removing network. SSID: ", ssid)
-	//TODO
-	return nil
+	return netmanagerclient.RemoveWifiNetwork(ssid)
 }
 
 func enableWifi(args Args) error {

@@ -63,22 +63,6 @@ func ReconfigureWifi() error {
 	return err
 }
 
-// AddNetwork will add a new wifi network.
-// After adding a new network apply ReconfigureWifi() to load it.
-func AddNetwork(ssid string, password string) error {
-	//TODO Is a dbus call needed for this?
-	_, err := eventsDbusCall("AddNetwork", ssid, password)
-	return err
-}
-
-// RemoveNetwork will remove a wifi network.
-// After removing a network apply ReconfigureWifi() to unload it.
-func RemoveNetwork(ssid string) error {
-	//TODO Is a dbus call needed for this?
-	_, err := eventsDbusCall("RemoveNetwork", ssid)
-	return err
-}
-
 // EnableWifi will enable the wifi.
 // If the wifi is already enabled it will return unless force is true,
 // then it will start up the wifi again.
@@ -156,6 +140,7 @@ func GetStateChanges() (chan NetworkState, chan<- struct{}, error) {
 type WiFiNetwork struct {
 	SSID    string
 	Quality string
+	ID      string
 }
 
 func ListAvailableWiFiNetworks() ([]WiFiNetwork, error) {
@@ -196,44 +181,91 @@ func ListAvailableWiFiNetworks() ([]WiFiNetwork, error) {
 	return networks, nil
 }
 
+func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
+	cmd := exec.Command("wpa_cli", "-i", "wlan0", "list_networks")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	networks := []WiFiNetwork{}
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		bits := strings.Split(line, "\t")
+		if len(bits) > 1 {
+			networks = append(networks, WiFiNetwork{
+				ID:   bits[0],
+				SSID: bits[1],
+			})
+		}
+	}
+	return networks, nil
+}
+
 // addWifiNetwork adds a new WiFi network with the given SSID and password.
 func AddWifiNetwork(ssid, password string) error {
 	//TODO Check the outputs of the commands to check that they ran properly
 	// This is a basic implementation. You might need to modify it based on your wpa_supplicant setup
 	cmd := exec.Command("wpa_cli", "-i", "wlan0", "add_network")
 	networkID, err := cmd.Output()
-	log.Println(string(networkID))
+	id := strings.TrimSpace(string(networkID))
 	if err != nil {
 		return err
 	}
 
-	cmd = exec.Command("wpa_cli", "-i", "wlan0", "set_network", string(networkID), "ssid", fmt.Sprintf("\"%s\"", ssid))
-	out, err := cmd.CombinedOutput()
-	log.Println(string(out))
-	if err != nil {
+	if err := runWPACommand("wpa_cli", "-i", "wlan0", "set_network", id, "ssid", fmt.Sprintf("\"%s\"", ssid)); err != nil {
 		return err
 	}
 
-	cmd = exec.Command("wpa_cli", "-i", "wlan0", "set_network", string(networkID), "psk", fmt.Sprintf("\"%s\"", password))
-	out, err = cmd.CombinedOutput()
-	log.Println(string(out))
-	if err != nil {
+	if err := runWPACommand("wpa_cli", "-i", "wlan0", "set_network", id, "psk", fmt.Sprintf("\"%s\"", password)); err != nil {
 		return err
 	}
 
-	cmd = exec.Command("wpa_cli", "-i", "wlan0", "enable_network", string(networkID))
-	out, err = cmd.CombinedOutput()
-	log.Println(string(out))
-	if err != nil {
+	if err := runWPACommand("wpa_cli", "-i", "wlan0", "enable_network", id); err != nil {
 		return err
 	}
 
-	cmd = exec.Command("wpa_cli", "-i", "wlan0", "save", "config", "enable_network", string(networkID))
-	out, err = cmd.CombinedOutput()
-	log.Println(string(out))
-	if err != nil {
+	if err := runWPACommand("wpa_cli", "-i", "wlan0", "save", "config"); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+func RemoveWifiNetwork(ssid string) error {
+	networks, err := ListSavedWifiNetworks()
+	if err != nil {
+		return err
+	}
+	id := ""
+	for _, network := range networks {
+		if network.SSID == ssid {
+			id = network.ID
+		}
+	}
+	if id == "" {
+		log.Println("no network found for that SSID")
+		return nil
+	}
+	if err := runWPACommand("wpa_cli", "-i", "wlan0", "remove_network", id); err != nil {
+		return err
+	}
+
+	if err := runWPACommand("wpa_cli", "-i", "wlan0", "save", "config"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func runWPACommand(args ...string) error {
+	out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("error running wpa command: '%s', output: %s", strings.Join(args, " "), string(out))
+	}
+	strings.Join(args, "")
+	if strings.Contains(string(out), "FAIL") || strings.Contains(string(out), "exit status 255") {
+		return fmt.Errorf("error running wpa command: '%s', output: %s", strings.Join(args, " "), string(out))
+	}
 	return nil
 }
