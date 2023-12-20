@@ -34,8 +34,8 @@ type Args struct {
 	Service              *subcommand    `arg:"subcommand:service" help:"start service"`
 	ReadState            *ReadState     `arg:"subcommand:read-state" help:"read the state of the network"`
 	ReconfigureWifi      *subcommand    `arg:"subcommand:reconfigure-wifi" help:"reconfigure the wifi network"`
-	AddNetwork           *AddNetwork    `arg:"subcommand:add-network" help:"add a network"`
-	RemoveNetwork        *RemoveNetwork `arg:"subcommand:remove-network" help:"remove a network"`
+	AddWifiNetwork       *AddNetwork    `arg:"subcommand:add-wifi-network" help:"add a network"`
+	RemoveWifiNetwork    *RemoveNetwork `arg:"subcommand:remove-wifi-network" help:"remove a network"`
 	EnableWifi           *EnableWifi    `arg:"subcommand:enable-wifi" help:"enable wifi"`
 	EnableHotspot        *EnableHotspot `arg:"subcommand:enable-hotspot" help:"enable hotspot"`
 	ScanNetwork          *subcommand    `arg:"subcommand:scan-network" help:"show available networks"`
@@ -77,10 +77,10 @@ func runMain() error {
 		return readState(args)
 	} else if args.ReconfigureWifi != nil {
 		return reconfigureWifi()
-	} else if args.AddNetwork != nil {
-		return addNetwork(args.AddNetwork.SSID, args.AddNetwork.Pass)
-	} else if args.RemoveNetwork != nil {
-		return removeNetwork(args.RemoveNetwork.SSID)
+	} else if args.AddWifiNetwork != nil {
+		return addWifiNetwork(args.AddWifiNetwork.SSID, args.AddWifiNetwork.Pass)
+	} else if args.RemoveWifiNetwork != nil {
+		return removeWifiNetwork(args.RemoveWifiNetwork.SSID)
 	} else if args.EnableWifi != nil {
 		return enableWifi(args)
 	} else if args.EnableHotspot != nil {
@@ -154,13 +154,12 @@ func reconfigureWifi() error {
 	return netmanagerclient.ReconfigureWifi()
 }
 
-func addNetwork(ssid, pass string) error {
+func addWifiNetwork(ssid, pass string) error {
 	log.Println("Adding network. SSID: ", ssid, " Pass: ", pass)
-	//TODO
-	return nil
+	return netmanagerclient.AddWifiNetwork(ssid, pass)
 }
 
-func removeNetwork(ssid string) error {
+func removeWifiNetwork(ssid string) error {
 	log.Println("Removing network. SSID: ", ssid)
 	//TODO
 	return nil

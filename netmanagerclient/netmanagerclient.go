@@ -195,3 +195,45 @@ func ListAvailableWiFiNetworks() ([]WiFiNetwork, error) {
 	}
 	return networks, nil
 }
+
+// addWifiNetwork adds a new WiFi network with the given SSID and password.
+func AddWifiNetwork(ssid, password string) error {
+	//TODO Check the outputs of the commands to check that they ran properly
+	// This is a basic implementation. You might need to modify it based on your wpa_supplicant setup
+	cmd := exec.Command("wpa_cli", "-i", "wlan0", "add_network")
+	networkID, err := cmd.Output()
+	log.Println(string(networkID))
+	if err != nil {
+		return err
+	}
+
+	cmd = exec.Command("wpa_cli", "-i", "wlan0", "set_network", string(networkID), "ssid", fmt.Sprintf("\"%s\"", ssid))
+	out, err := cmd.CombinedOutput()
+	log.Println(string(out))
+	if err != nil {
+		return err
+	}
+
+	cmd = exec.Command("wpa_cli", "-i", "wlan0", "set_network", string(networkID), "psk", fmt.Sprintf("\"%s\"", password))
+	out, err = cmd.CombinedOutput()
+	log.Println(string(out))
+	if err != nil {
+		return err
+	}
+
+	cmd = exec.Command("wpa_cli", "-i", "wlan0", "enable_network", string(networkID))
+	out, err = cmd.CombinedOutput()
+	log.Println(string(out))
+	if err != nil {
+		return err
+	}
+
+	cmd = exec.Command("wpa_cli", "-i", "wlan0", "save", "config", "enable_network", string(networkID))
+	out, err = cmd.CombinedOutput()
+	log.Println(string(out))
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
