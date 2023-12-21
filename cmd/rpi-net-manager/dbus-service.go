@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	netmanagerclient "github.com/TheCacophonyProject/rpi-net-manager/netmanagerclient"
+	"github.com/TheCacophonyProject/rpi-net-manager/netmanagerclient"
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
 )

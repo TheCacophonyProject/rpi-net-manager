@@ -183,6 +183,7 @@ func (nh *networkHandler) busy() bool {
 	return nh.state == netmanagerclient.NS_WIFI_SETUP || nh.state == netmanagerclient.NS_HOTSPOT_SETUP
 }
 
+// TODO Use this function when switching to wifi from hotspot
 func (nh *networkHandler) setupWifiWithRollback() error {
 	if nh.busy() {
 		return fmt.Errorf("busy")
@@ -354,7 +355,9 @@ var dhcp_config_hotspot_extra_lines = []string{
 func setDHCPMode(mode dhcpMode) error {
 	// TODO Have this done instead by having the config file be a symbolic link to either the wifi
 	// or hotspot configuration. Can then check where the symbolic link is pointed to to see if it needs
-	// changed and restarted.
+	// changed and restarted, makes it easy to modify files for hotspot and wifi when testing.
+
+	//TODO When changing mode it sometimes takes a while, try to speed it up when switching modes.
 
 	// Get config from what mode selected.
 	config := []string{}

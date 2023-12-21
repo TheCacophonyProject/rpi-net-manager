@@ -187,10 +187,6 @@ func enableWifi(args Args) error {
 	return netmanagerclient.EnableWifi(args.EnableWifi.Force)
 }
 
-func (nh *networkHandler) enableWifi(force bool) error {
-	return nil
-}
-
 func enableHotspot(args Args) error {
 	log.Println("Enabling hotspot.")
 	return netmanagerclient.EnableHotspot(args.EnableHotspot.Force)
