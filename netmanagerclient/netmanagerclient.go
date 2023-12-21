@@ -1,4 +1,4 @@
-package managementdclient
+package netmanagerclient
 
 import (
 	"errors"
