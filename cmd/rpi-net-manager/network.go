@@ -13,7 +13,20 @@ import (
 )
 
 type networkHandler struct {
-	state netmanagerclient.NetworkState
+	state              netmanagerclient.NetworkState
+	keepHotspotOnTimer time.Timer
+	keepHotspotOnUntil time.Time // This is used to keep track of how much time is left in the timer, as you can not read that value from the timer.
+}
+
+func (nh *networkHandler) keepHotspotOnFor(keepOnFor time.Duration) {
+	newKeepOnUntil := time.Now().Add(keepOnFor)
+	if newKeepOnUntil.After(nh.keepHotspotOnUntil) {
+		log.Println("Keep hotspot on for", keepOnFor)
+		nh.keepHotspotOnUntil = newKeepOnUntil
+		nh.keepHotspotOnTimer.Reset(keepOnFor)
+	} else {
+		log.Printf("Keep hotspot on for %s, but already on for %s", keepOnFor, time.Until(nh.keepHotspotOnUntil))
+	}
 }
 
 func (nh *networkHandler) setState(ns netmanagerclient.NetworkState) {
@@ -165,28 +178,6 @@ func createConfigFile(name string, config []string) error {
 	}
 	return nil
 }
-
-/*
-// Setup Hotspot and stop after 5 minutes using a new goroutine
-func initialiseHotspot() error {
-	log.Println("Initialising Hotspot, first checking if device is connected to a wifi network.")
-	log.Printf("Setting up DHCP config for connecting to wifi networks.")
-	if err := setupWifi(); err != nil {
-		return err
-	}
-
-	log.Printf("Checking if connected to network in next 10 seconds...")
-	connected, err := waitAndCheckIfConnectedToNetwork()
-	if err != nil {
-		return err
-	}
-	if connected {
-		return fmt.Errorf("already connected to a network")
-	}
-	log.Println("Not connected to a network, starting up hotspot.")
-	return setupHotspot()
-}
-*/
 
 func (nh *networkHandler) busy() bool {
 	return nh.state == netmanagerclient.NS_WIFI_SETUP || nh.state == netmanagerclient.NS_HOTSPOT_SETUP

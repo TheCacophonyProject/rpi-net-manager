@@ -97,6 +97,8 @@ func runMain() error {
 
 func startService() error {
 	nh := &networkHandler{}
+	nh.keepHotspotOnTimer = *time.NewTimer(0)
+	nh.keepHotspotOnUntil = time.Now()
 	if err := startDBusService(nh); err != nil {
 		return err
 	}
@@ -123,10 +125,11 @@ func startService() error {
 		log.Println("Failed to setup hotspot:", err)
 		return nil
 	}
-	hotspotUsageTimer := time.NewTimer(hotspotUsageTimeout)
-	<-hotspotUsageTimer.C // Hotspot has not been used for a while, stop it.
-	log.Printf("No API usage for %s, stopping hotspot.", hotspotUsageTimeout)
-	if err := nh.setupWifi(); err != nil { // Setting up
+	nh.keepHotspotOnFor(hotspotUsageTimeout)
+	//hotspotUsageTimer := time.NewTimer(hotspotUsageTimeout)
+	<-nh.keepHotspotOnTimer.C // Hotspot has not been used for a while, stop it.
+	log.Println("Hotspot timer expired, stopping hotspot and starting wifi.")
+	if err := nh.setupWifi(); err != nil {
 		log.Println("Failed to stop hotspot:", err)
 	}
 	return nil
@@ -184,13 +187,17 @@ func enableWifi(args Args) error {
 	return netmanagerclient.EnableWifi(args.EnableWifi.Force)
 }
 
+func (nh *networkHandler) enableWifi(force bool) error {
+	return nil
+}
+
 func enableHotspot(args Args) error {
 	log.Println("Enabling hotspot.")
 	return netmanagerclient.EnableHotspot(args.EnableHotspot.Force)
 }
 
 func scanNetwork() error {
-	networks, err := netmanagerclient.ListAvailableWiFiNetworks()
+	networks, err := netmanagerclient.ScanWiFiNetworks()
 	if err != nil {
 		return err
 	}

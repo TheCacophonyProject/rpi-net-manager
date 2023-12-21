@@ -40,6 +40,11 @@ const (
 	DbusPath      = "/org/cacophony/RPiNetManager"
 )
 
+func KeepHotspotOnFor(seconds int) error {
+	_, err := eventsDbusCall("KeepHotspotOnFor", seconds)
+	return err
+}
+
 // ReadState will read the current state of the network.
 func ReadState() (NetworkState, error) {
 	data, err := eventsDbusCall("ReadState")
@@ -67,6 +72,7 @@ func ReconfigureWifi() error {
 // If the wifi is already enabled it will return unless force is true,
 // then it will start up the wifi again.
 func EnableWifi(force bool) error {
+	log.Println("Making call to EnableWifi")
 	_, err := eventsDbusCall("EnableWifi", force)
 	return err
 }
@@ -143,7 +149,7 @@ type WiFiNetwork struct {
 	ID      string
 }
 
-func ListAvailableWiFiNetworks() ([]WiFiNetwork, error) {
+func ScanWiFiNetworks() ([]WiFiNetwork, error) {
 	cmd := exec.Command("sudo", "iwlist", "wlan0", "scan")
 	output, err := cmd.Output()
 	if err != nil {
@@ -202,8 +208,68 @@ func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
 	return networks, nil
 }
 
+type InputError struct {
+	Message string
+}
+
+func (e InputError) Error() string {
+	return fmt.Sprintf("Input Error: %s", e.Message)
+}
+
+var ErrNetworkAlreadyExists = InputError{Message: "a network with the given SSID already exists"}
+var ErrPSKTooShort = InputError{Message: "the given PSK is too short, must be at least 8 characters long"}
+var ErrBushnetNetwork = InputError{Message: "the given SSID is a Bushnet network so can't be modified"}
+
+func checkIfBushnetNetwork(ssid string) error {
+	if ssid == "Bushnet" || ssid == "bushnet" {
+		return ErrBushnetNetwork
+	}
+	return nil
+}
+
+func checkIfNetworkExists(ssid string) error {
+	networks, err := ListSavedWifiNetworks()
+	if err != nil {
+		return err
+	}
+	for _, network := range networks {
+		if network.SSID == ssid {
+			return ErrNetworkAlreadyExists
+		}
+	}
+	return nil
+}
+
 // addWifiNetwork adds a new WiFi network with the given SSID and password.
 func AddWifiNetwork(ssid, password string) error {
+	// Check that there is not already a network with the given SSID
+	if err := checkIfNetworkExists(ssid); err != nil {
+		return err
+	}
+
+	if len(password) < 8 {
+		return ErrPSKTooShort
+	}
+
+	if err := checkIfBushnetNetwork(ssid); err != nil {
+		return err
+	}
+
+	// If in one of the step the network fails then make sure that it is deleted.
+	networkAddedSuccess := false
+	defer func() {
+		if !networkAddedSuccess {
+			log.Println("network fail to be added, trying to remove it")
+			if err := checkIfNetworkExists(ssid); err == ErrNetworkAlreadyExists {
+				if err := RemoveWifiNetwork(ssid); err != nil {
+					log.Println(err)
+				}
+			} else {
+				log.Println(err)
+			}
+		}
+	}()
+
 	cmd := exec.Command("wpa_cli", "-i", "wlan0", "add_network")
 	networkID, err := cmd.Output()
 	id := strings.TrimSpace(string(networkID))
@@ -226,11 +292,14 @@ func AddWifiNetwork(ssid, password string) error {
 	if err := runWPACommand("wpa_cli", "-i", "wlan0", "save", "config"); err != nil {
 		return err
 	}
-
+	networkAddedSuccess = true
 	return nil
 }
 
 func RemoveWifiNetwork(ssid string) error {
+	if err := checkIfBushnetNetwork(ssid); err != nil {
+		return err
+	}
 	networks, err := ListSavedWifiNetworks()
 	if err != nil {
 		return err
@@ -242,7 +311,7 @@ func RemoveWifiNetwork(ssid string) error {
 		}
 	}
 	if id == "" {
-		log.Println("no network found for that SSID")
+		log.Printf("when trying to delete network '%s' it was not found", ssid)
 		return nil
 	}
 	if err := runWPACommand("wpa_cli", "-i", "wlan0", "remove_network", id); err != nil {
@@ -261,7 +330,6 @@ func runWPACommand(args ...string) error {
 	if err != nil {
 		return fmt.Errorf("error running wpa command: '%s', output: %s", strings.Join(args, " "), string(out))
 	}
-	strings.Join(args, "")
 	if strings.Contains(string(out), "FAIL") || strings.Contains(string(out), "exit status 255") {
 		return fmt.Errorf("error running wpa command: '%s', output: %s", strings.Join(args, " "), string(out))
 	}

@@ -5,6 +5,7 @@ import (
 	"log"
 	"runtime"
 	"strings"
+	"time"
 
 	netmanagerclient "github.com/TheCacophonyProject/rpi-net-manager/netmanagerclient"
 	"github.com/godbus/dbus/v5"
@@ -75,20 +76,22 @@ func (s service) ReconfigureWifi() *dbus.Error {
 }
 
 func (s service) EnableWifi(force bool) *dbus.Error {
-	runFuncLogErr(func() error {
-		return enableWifi(Args{
-			EnableWifi: &EnableWifi{Force: force},
-		})
-	})
+	//TODO use force param
+	runFuncLogErr(s.nh.setupWifi)
 	return nil
 }
 
 func (s service) EnableHotspot(force bool) *dbus.Error {
-	runFuncLogErr(func() error {
-		return enableHotspot(Args{
-			EnableWifi: &EnableWifi{Force: force},
-		})
-	})
+	//TODO use force param
+	runFuncLogErr(s.nh.setupHotspot)
+	return nil
+}
+
+func (s service) KeepHotspotOnFor(seconds int) *dbus.Error {
+	if s.nh.state != netmanagerclient.NS_HOTSPOT && s.nh.state != netmanagerclient.NS_HOTSPOT_SETUP {
+		return dbusErr(errors.New("hotspot is not enabled"))
+	}
+	s.nh.keepHotspotOnFor(time.Duration(seconds) * time.Second)
 	return nil
 }
 
