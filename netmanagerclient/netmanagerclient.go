@@ -77,6 +77,11 @@ func EnableWifi(force bool) error {
 	return err
 }
 
+func CheckState() error {
+	_, err := eventsDbusCall("CheckState")
+	return err
+}
+
 // EnableHotspot will enable the hotspot.
 // If the hotspot is already enabled it will return unless force is true,
 // then it will start up the hotspot again.

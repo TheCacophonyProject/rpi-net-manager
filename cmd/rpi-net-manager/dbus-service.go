@@ -95,6 +95,11 @@ func (s service) KeepHotspotOnFor(seconds int) *dbus.Error {
 	return nil
 }
 
+func (s service) CheckState() *dbus.Error {
+	go s.nh.checkState()
+	return nil
+}
+
 func runFuncLogErr(f func() error) {
 	if err := f(); err != nil {
 		log.Println("Error: ", err)

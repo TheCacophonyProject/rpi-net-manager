@@ -40,8 +40,9 @@ type Args struct {
 	EnableWifi           *EnableWifi    `arg:"subcommand:enable-wifi" help:"enable wifi"`
 	EnableHotspot        *EnableHotspot `arg:"subcommand:enable-hotspot" help:"enable hotspot"`
 	ScanNetwork          *subcommand    `arg:"subcommand:scan-network" help:"show available networks"`
-	ShowConnectedDevices *subcommand    `arg:"subcommand:show-connected-devices" help:"show connected devices on the hotspot //TODO"` //TODO
-	ModemStatus          *subcommand    `arg:"subcommand:modem-status" help:"show modem status //TODO"`                               //TODO
+	ShowConnectedDevices *subcommand    `arg:"subcommand:show-connected-devices" help:"show connected devices on the hotspot //TODO"`
+	ModemStatus          *subcommand    `arg:"subcommand:modem-status" help:"show modem status //TODO"`
+	CheckState           *subcommand    `arg:"subcommand:check-state" help:"check if the state needs to be updated"`
 }
 
 func (Args) Version() string {
@@ -90,6 +91,8 @@ func runMain() error {
 		return enableHotspot(args)
 	} else if args.ScanNetwork != nil {
 		return scanNetwork()
+	} else if args.CheckState != nil {
+		return checkState()
 	} else {
 		return fmt.Errorf("no command given, use --help for usage")
 	}
@@ -199,6 +202,15 @@ func scanNetwork() error {
 	}
 	for _, network := range networks {
 		log.Printf("SSID: '%s', Quality: '%s'", network.SSID, network.Quality)
+	}
+	return nil
+}
+
+func checkState() error {
+	log.Println("Checking state.")
+	err := netmanagerclient.CheckState()
+	if err != nil {
+		return err
 	}
 	return nil
 }

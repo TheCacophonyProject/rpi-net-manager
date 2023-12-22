@@ -34,6 +34,8 @@ nfpms:
       dst: /etc/systemd/system/rpi-net-manager.service
     - src: _release/org.cacophony.RPiNetManager.conf
       dst: /etc/dbus-1/system.d/org.cacophony.RPiNetManager.conf
+    - src: _release/10-notify-rpi-net-manager
+      dst: /lib/dhcpcd/dhcpcd-hooks/10-rpi-net-manager
   scripts:
     postinstall: "_release/postinstall.sh"
 

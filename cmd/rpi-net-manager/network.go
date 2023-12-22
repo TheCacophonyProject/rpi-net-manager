@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,6 +18,36 @@ type networkHandler struct {
 	state              netmanagerclient.NetworkState
 	keepHotspotOnTimer time.Timer
 	keepHotspotOnUntil time.Time // This is used to keep track of how much time is left in the timer, as you can not read that value from the timer.
+	busy               bool
+}
+
+// checkState will check if the network state need to be updated.
+func (nh *networkHandler) checkState() {
+	log.Println("Checking the network state")
+	switch nh.state {
+	case netmanagerclient.NS_WIFI:
+		// If state is on wifi, check if still connected and if not start up the hotspot.
+		connected, _, _, err := checkIsConnectedToNetwork()
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		if !connected {
+			log.Println("Wifi disconnected, will try to connect again but will fall back to hotspot.")
+			err := nh.setupWifiWithRollback()
+			if err != nil {
+				log.Println(err)
+			}
+		}
+	case netmanagerclient.NS_HOTSPOT:
+		// Nothing to do if in hotspot mode.
+	case netmanagerclient.NS_WIFI_SETUP:
+		// Nothing to do if wifi is being setup.
+	case netmanagerclient.NS_HOTSPOT_SETUP:
+		// Nothing to do if hotspot is being setup.
+	default:
+		log.Println("Unhandled network state:", nh.state)
+	}
 }
 
 func (nh *networkHandler) keepHotspotOnFor(keepOnFor time.Duration) {
@@ -42,7 +74,7 @@ func (nh *networkHandler) setState(ns netmanagerclient.NetworkState) {
 }
 
 func (nh *networkHandler) reconfigureWifi() error {
-	if nh.busy() {
+	if nh.busy {
 		return fmt.Errorf("busy")
 	}
 	log.Println("Reconfigure wifi network.")
@@ -91,6 +123,35 @@ func createAPConfig(name string) error {
 }
 
 const router_ip = "192.168.4.1"
+
+func checkIfRunningHotspot() (bool, error) {
+	cmd := exec.Command("iw", "dev", "wlan0", "info")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+
+	if err != nil {
+		return false, err
+	}
+
+	ssidRegex := regexp.MustCompile(`ssid ([^\s]+)`)
+	typeRegex := regexp.MustCompile(`type ([^\s]+)`)
+
+	ssidMatch := ssidRegex.FindStringSubmatch(out.String())
+	typeMatch := typeRegex.FindStringSubmatch(out.String())
+
+	var ssid, wifiType string
+
+	if len(ssidMatch) > 1 {
+		ssid = ssidMatch[1]
+	}
+
+	if len(typeMatch) > 1 {
+		wifiType = typeMatch[1]
+	}
+
+	return ssid == "bushnet" && wifiType == "AP", nil
+}
 
 func checkIsConnectedToNetwork() (bool, string, string, error) {
 	cmd := exec.Command("wpa_cli", "-i", "wlan0", "status")
@@ -179,39 +240,53 @@ func createConfigFile(name string, config []string) error {
 	return nil
 }
 
-func (nh *networkHandler) busy() bool {
-	return nh.state == netmanagerclient.NS_WIFI_SETUP || nh.state == netmanagerclient.NS_HOTSPOT_SETUP
-}
-
-// TODO Use this function when switching to wifi from hotspot
 func (nh *networkHandler) setupWifiWithRollback() error {
-	if nh.busy() {
+	if nh.busy {
 		return fmt.Errorf("busy")
 	}
 	if nh.state != netmanagerclient.NS_WIFI {
-		err := nh.setupWifi()
-		if err != nil {
+		if err := nh.setupWifi(); err != nil {
 			return err
 		}
 	}
 
+	nh.busy = true
+	defer func() { nh.busy = false }()
+
 	log.Println("WiFi network is up, checking that device can connect to a network.")
-	connected, err := waitAndCheckIfConnectedToNetwork()
+	connected, _, _, err := checkIsConnectedToNetwork()
 	if err != nil {
 		return err
 	}
-	if !connected {
+	if connected {
+		nh.setState(netmanagerclient.NS_WIFI)
+		log.Println("connected")
+		return nil
+	}
+	nh.setState(netmanagerclient.NS_WIFI_SETUP)
+	connected, err = waitAndCheckIfConnectedToNetwork()
+	if err != nil {
+		return err
+	}
+	if connected {
+		nh.setState(netmanagerclient.NS_WIFI)
+	} else {
 		log.Println("Failed to connect to wifi. Starting up hotspot.")
+		nh.busy = false
 		return nh.setupHotspot()
 	}
 	return nil
 }
 
 func (nh *networkHandler) setupHotspot() error {
-	if nh.busy() {
+	if nh.busy {
 		return fmt.Errorf("busy")
 	}
+	nh.busy = true
+	defer func() { nh.busy = false }()
+
 	nh.setState(netmanagerclient.NS_HOTSPOT_SETUP)
+
 	log.Println("Setting up network for hosting a hotspot.")
 
 	if err := run("wpa_cli", "-i", "wlan0", "disconnect"); err != nil {
@@ -274,6 +349,11 @@ func run(args ...string) error {
 // setupWifi will set up the wifi network settings for connecting to wifi networks.
 // This includes stopping the hotspot.
 func (nh *networkHandler) setupWifi() error {
+	if nh.busy {
+		return fmt.Errorf("busy")
+	}
+	nh.busy = true
+	defer func() { nh.busy = false }()
 	nh.setState(netmanagerclient.NS_WIFI_SETUP)
 	log.Println("Setting up network for connecting to Wifi networks.")
 	log.Println("Setting up DHCP config for connecting to wifi networks.")

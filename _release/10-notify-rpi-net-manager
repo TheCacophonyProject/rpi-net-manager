@@ -1,0 +1,3 @@
+#!/bin/bash
+# dhcpcd hook script to notify rpi-net-manager that the wifi state has changed
+rpi-net-manager check-state
