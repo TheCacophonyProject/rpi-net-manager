@@ -2,12 +2,10 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"time"
 
@@ -124,6 +122,7 @@ func createAPConfig(name string) error {
 
 const router_ip = "192.168.4.1"
 
+/*
 func checkIfRunningHotspot() (bool, error) {
 	cmd := exec.Command("iw", "dev", "wlan0", "info")
 	var out bytes.Buffer
@@ -152,6 +151,7 @@ func checkIfRunningHotspot() (bool, error) {
 
 	return ssid == "bushnet" && wifiType == "AP", nil
 }
+*/
 
 func checkIsConnectedToNetwork() (bool, string, string, error) {
 	cmd := exec.Command("wpa_cli", "-i", "wlan0", "status")
@@ -432,6 +432,13 @@ var dhcp_config_hotspot_extra_lines = []string{
 	"nohook lookup-hostname, waitip, waitipv6 eth0",
 }
 
+var dhcp_config_wifi_extra_lines = []string{
+	"interface wlan0",
+	"metric 200",
+	"interface usb0",
+	"metric 300",
+}
+
 func setDHCPMode(mode dhcpMode) error {
 	// TODO Have this done instead by having the config file be a symbolic link to either the wifi
 	// or hotspot configuration. Can then check where the symbolic link is pointed to to see if it needs
@@ -443,7 +450,7 @@ func setDHCPMode(mode dhcpMode) error {
 	config := []string{}
 	switch mode {
 	case dhcpModeWifi:
-		config = dhcp_config_default
+		config = append(dhcp_config_default, dhcp_config_wifi_extra_lines...)
 	case dhcpModeHotspot:
 		config = append(dhcp_config_default, dhcp_config_hotspot_extra_lines...)
 	}
