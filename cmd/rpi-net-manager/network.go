@@ -19,6 +19,7 @@ type networkHandler struct {
 	busy               bool
 }
 
+// TODO Add state wifi running but not connected.
 // checkState will check if the network state need to be updated.
 func (nh *networkHandler) checkState() {
 	log.Println("Checking the network state")
@@ -193,7 +194,7 @@ func checkIsConnectedToNetwork() (bool, string, string, error) {
 	}
 }
 
-// waitAndCheckIfConnectedToNetwork will return true if a network is connected to within 10 seconds
+// waitAndCheckIfConnectedToNetwork will return true if a network is connected to within 30 seconds
 func waitAndCheckIfConnectedToNetwork() (bool, error) {
 	for i := 0; i < 30; i++ {
 		connected, _, _, err := checkIsConnectedToNetwork()
@@ -395,7 +396,7 @@ func (nh *networkHandler) setupWifi() error {
 		return err
 	}
 
-	nh.setState(netmanagerclient.NS_WIFI)
+	//nh.setState(netmanagerclient.NS_WIFI)
 	return nil
 }
 

@@ -77,7 +77,7 @@ func (s service) ReconfigureWifi() *dbus.Error {
 
 func (s service) EnableWifi(force bool) *dbus.Error {
 	//TODO use force param
-	runFuncLogErr(s.nh.setupWifi)
+	runFuncLogErr(s.nh.setupWifiWithRollback)
 	return nil
 }
 

@@ -327,6 +327,8 @@ func RemoveWifiNetwork(ssid string) error {
 		return err
 	}
 
+	//TODO Check if connected to network and if not then switch to wifi.
+
 	return nil
 }
 

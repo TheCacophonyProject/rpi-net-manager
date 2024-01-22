@@ -105,7 +105,7 @@ func startService() error {
 	if err := startDBusService(nh); err != nil {
 		return err
 	}
-	hotspotUsageTimeout := 1 * time.Minute
+	hotspotUsageTimeout := 5 * time.Minute
 	log.Println("Setting up wifi.")
 	if err := nh.setupWifi(); err != nil {
 		log.Println("Failed to setup wifi:", err)
@@ -120,6 +120,7 @@ func startService() error {
 	}
 	if connected {
 		log.Println("Connected to network. Not starting up hotspot.")
+		nh.setState(netmanagerclient.NS_WIFI)
 		return nil
 	}
 
@@ -127,6 +128,11 @@ func startService() error {
 	if err := nh.setupHotspot(); err != nil {
 		log.Println("Failed to setup hotspot:", err)
 		return nil
+	}
+	// Clear the timer
+	select {
+	case <-nh.keepHotspotOnTimer.C:
+	default:
 	}
 	nh.keepHotspotOnFor(hotspotUsageTimeout)
 	//hotspotUsageTimer := time.NewTimer(hotspotUsageTimeout)
