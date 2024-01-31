@@ -155,7 +155,7 @@ type WiFiNetwork struct {
 }
 
 func ScanWiFiNetworks() ([]WiFiNetwork, error) {
-	cmd := exec.Command("sudo", "iwlist", "wlan0", "scan")
+	cmd := exec.Command("iwlist", "wlan0", "scan")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
