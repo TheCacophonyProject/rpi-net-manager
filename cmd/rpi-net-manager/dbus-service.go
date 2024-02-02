@@ -70,10 +70,12 @@ func (s service) ReadState() (string, *dbus.Error) {
 	return string(s.nh.state), nil
 }
 
+/*
 func (s service) ReconfigureWifi() *dbus.Error {
 	go runFuncLogErr(s.nh.reconfigureWifi)
 	return nil
 }
+*/
 
 func (s service) EnableWifi(force bool) *dbus.Error {
 	//TODO use force param

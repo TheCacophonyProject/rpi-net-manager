@@ -31,9 +31,9 @@ type ReadState struct {
 type subcommand struct{}
 
 type Args struct {
-	Service              *subcommand    `arg:"subcommand:service" help:"start service"`
-	ReadState            *ReadState     `arg:"subcommand:read-state" help:"read the state of the network"`
-	ReconfigureWifi      *subcommand    `arg:"subcommand:reconfigure-wifi" help:"reconfigure the wifi network"`
+	Service   *subcommand `arg:"subcommand:service" help:"start service"`
+	ReadState *ReadState  `arg:"subcommand:read-state" help:"read the state of the network"`
+	//ReconfigureWifi      *subcommand    `arg:"subcommand:reconfigure-wifi" help:"reconfigure the wifi network"`
 	SavedWifiNetworks    *subcommand    `arg:"subcommand:saved-wifi-networks" help:"show saved wifi networks"`
 	AddWifiNetwork       *AddNetwork    `arg:"subcommand:add-wifi-network" help:"add a network"`
 	RemoveWifiNetwork    *RemoveNetwork `arg:"subcommand:remove-wifi-network" help:"remove a network"`
@@ -67,6 +67,10 @@ func runMain() error {
 	args := procArgs()
 	log.SetFlags(0)
 
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("rpi-net-manager must be run as root")
+	}
+
 	if args.Service != nil {
 		if err := startService(); err != nil {
 			return err
@@ -77,8 +81,8 @@ func runMain() error {
 		return nil
 	} else if args.ReadState != nil {
 		return readState(args)
-	} else if args.ReconfigureWifi != nil {
-		return reconfigureWifi()
+		//} else if args.ReconfigureWifi != nil {
+		//	return reconfigureWifi()
 	} else if args.SavedWifiNetworks != nil {
 		return savedWifiNetworks()
 	} else if args.AddWifiNetwork != nil {
@@ -164,10 +168,12 @@ func readState(args Args) error {
 	return nil
 }
 
+/*
 func reconfigureWifi() error {
 	log.Println("Reconfiguring wifi.")
 	return netmanagerclient.ReconfigureWifi()
 }
+*/
 
 func savedWifiNetworks() error {
 	log.Println("Listing saved wifi networks.")
@@ -207,7 +213,7 @@ func scanNetwork() error {
 		return err
 	}
 	for _, network := range networks {
-		log.Printf("SSID: '%s', Quality: '%s'", network.SSID, network.Quality)
+		log.Printf("SSID: '%s', Quality: '%s', InUse: '%t'", network.SSID, network.Quality, network.InUse)
 	}
 	return nil
 }
