@@ -67,6 +67,7 @@ func runMain() error {
 	args := procArgs()
 	log.SetFlags(0)
 
+	log.Printf("Running version: %s", version)
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("rpi-net-manager must be run as root")
 	}
