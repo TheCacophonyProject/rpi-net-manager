@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
-	"regexp"
 	"strings"
 
 	"github.com/godbus/dbus/v5"
@@ -60,16 +59,6 @@ func ReadState() (NetworkState, error) {
 	}
 	return stringToNetworkState(stateStr)
 }
-
-// Don't think this is needed anymore
-/*
-// ReconfigureWifi will reconfigure the wifi network.
-// Call this after adding a new wifi network for it to be loaded.
-func ReconfigureWifi() error {
-	_, err := eventsDbusCall("ReconfigureWifi")
-	return err
-}
-*/
 
 // EnableWifi will enable the wifi.
 // If the wifi is already enabled it will return unless force is true,
@@ -196,44 +185,6 @@ func ScanWiFiNetworks() ([]WiFiNetwork, error) {
 	return networks, nil
 }
 
-func ScanWiFiNetworks_old() ([]WiFiNetwork, error) {
-	cmd := exec.Command("iwlist", "wlan0", "scan")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	networks := []WiFiNetwork{}
-	lines := strings.Split(string(output), "\n")
-	network := WiFiNetwork{}
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Cell") {
-			network = WiFiNetwork{}
-		}
-		if strings.HasPrefix(line, "ESSID") {
-			matches := regexp.MustCompile(`ESSID:"(.*)"`).FindStringSubmatch(line)
-			if len(matches) == 2 {
-				network.SSID = matches[1]
-				if network.SSID != "" {
-					networks = append(networks, network)
-				}
-			} else {
-				log.Println(matches)
-				log.Println("Failed to parse SSID:", line)
-			}
-		}
-		if strings.HasPrefix(line, "Quality") {
-			matches := regexp.MustCompile(`Quality=([^ ]+)`).FindStringSubmatch(line)
-			if len(matches) == 2 {
-				network.Quality = matches[1]
-			} else {
-				log.Println("Failed to parse Quality:", line)
-			}
-		}
-	}
-	return networks, nil
-}
-
 func ListUserSavedWifiNetworks() ([]WiFiNetwork, error) {
 	networks, err := ListSavedWifiNetworks()
 	if err != nil {
@@ -280,27 +231,6 @@ func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
 
 }
 
-func ListSavedWifiNetworks_old() ([]WiFiNetwork, error) {
-	cmd := exec.Command("wpa_cli", "-i", "wlan0", "list_networks")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	networks := []WiFiNetwork{}
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		bits := strings.Split(line, "\t")
-		if len(bits) > 1 {
-			networks = append(networks, WiFiNetwork{
-				ID:   bits[0],
-				SSID: bits[1],
-			})
-		}
-	}
-	return networks, nil
-}
-
 type InputError struct {
 	Message string
 }
@@ -335,7 +265,6 @@ func checkIfNetworkExists(ssid string) error {
 }
 
 func AddWifiNetwork(ssid, psk string) error {
-	//TODO Test
 	if err := checkIfNetworkExists(ssid); err != nil {
 		return err
 	}
@@ -350,67 +279,13 @@ func AddWifiNetwork(ssid, psk string) error {
 		"connection.type", "802-11-wireless",
 		"wifi-sec.key-mgmt", "wpa-psk",
 		"connection.id", ssid,
+		"ipv4.route-metric", "10", // To make wifi preferable over the USB (modem) connection
+		"ipv6.route-metric", "10",
 		"wifi.ssid", ssid,
 		"wifi-sec.psk", psk).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to add network: %v, output: %s", err, out)
 	}
-	return nil
-}
-
-// addWifiNetwork adds a new WiFi network with the given SSID and password.
-func AddWifiNetwork_old(ssid, password string) error {
-	// Check that there is not already a network with the given SSID
-	if err := checkIfNetworkExists(ssid); err != nil {
-		return err
-	}
-
-	if len(password) < 8 {
-		return ErrPSKTooShort
-	}
-
-	if err := checkIfBushnetNetwork(ssid); err != nil {
-		return err
-	}
-
-	// If in one of the step the network fails then make sure that it is deleted.
-	networkAddedSuccess := false
-	defer func() {
-		if !networkAddedSuccess {
-			log.Println("network fail to be added, trying to remove it")
-			if err := checkIfNetworkExists(ssid); err == ErrNetworkAlreadyExists {
-				if err := RemoveWifiNetwork(ssid); err != nil {
-					log.Println(err)
-				}
-			} else {
-				log.Println(err)
-			}
-		}
-	}()
-
-	cmd := exec.Command("wpa_cli", "-i", "wlan0", "add_network")
-	networkID, err := cmd.Output()
-	id := strings.TrimSpace(string(networkID))
-	if err != nil {
-		return err
-	}
-
-	if err := runWPACommand("wpa_cli", "-i", "wlan0", "set_network", id, "ssid", fmt.Sprintf("\"%s\"", ssid)); err != nil {
-		return err
-	}
-
-	if err := runWPACommand("wpa_cli", "-i", "wlan0", "set_network", id, "psk", fmt.Sprintf("\"%s\"", password)); err != nil {
-		return err
-	}
-
-	if err := runWPACommand("wpa_cli", "-i", "wlan0", "enable_network", id); err != nil {
-		return err
-	}
-
-	if err := runWPACommand("wpa_cli", "-i", "wlan0", "save", "config"); err != nil {
-		return err
-	}
-	networkAddedSuccess = true
 	return nil
 }
 
@@ -421,48 +296,6 @@ func RemoveWifiNetwork(ssid string) error {
 	out, err := exec.Command("nmcli", "connection", "delete", ssid).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to remove network: %v, output: %s", err, out)
-	}
-	return nil
-}
-
-func RemoveWifiNetwork_old(ssid string) error {
-	if err := checkIfBushnetNetwork(ssid); err != nil {
-		return err
-	}
-	networks, err := ListSavedWifiNetworks()
-	if err != nil {
-		return err
-	}
-	id := ""
-	for _, network := range networks {
-		if network.SSID == ssid {
-			id = network.ID
-		}
-	}
-	if id == "" {
-		log.Printf("when trying to delete network '%s' it was not found", ssid)
-		return nil
-	}
-	if err := runWPACommand("wpa_cli", "-i", "wlan0", "remove_network", id); err != nil {
-		return err
-	}
-
-	if err := runWPACommand("wpa_cli", "-i", "wlan0", "save", "config"); err != nil {
-		return err
-	}
-
-	//TODO Check if connected to network and if not then switch to wifi.
-
-	return nil
-}
-
-func runWPACommand(args ...string) error {
-	out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("error running wpa command: '%s', output: %s", strings.Join(args, " "), string(out))
-	}
-	if strings.Contains(string(out), "FAIL") || strings.Contains(string(out), "exit status 255") {
-		return fmt.Errorf("error running wpa command: '%s', output: %s", strings.Join(args, " "), string(out))
 	}
 	return nil
 }
