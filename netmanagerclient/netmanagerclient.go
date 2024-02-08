@@ -148,13 +148,8 @@ type WiFiNetwork struct {
 }
 
 func ScanWiFiNetworks() ([]WiFiNetwork, error) {
-	out, err := exec.Command("nmcli", "device", "wifi", "rescan").CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("failed to rescan wifi: %v, output: %s", err, out)
-	}
-
 	//TODO do we need to add '--escape no' to the nmcli command?
-	out, err = exec.Command("nmcli", "--terse", "--fields", "IN-USE,SIGNAL,SSID", "device", "wifi", "list").CombinedOutput()
+	out, err := exec.Command("nmcli", "--terse", "--fields", "IN-USE,SIGNAL,SSID", "device", "wifi", "list", "--rescan", "yes").CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list wifi networks: %v, output: %s", err, out)
 	}
@@ -191,9 +186,9 @@ func ListUserSavedWifiNetworks() ([]WiFiNetwork, error) {
 		return nil, err
 	}
 	userNetworks := []WiFiNetwork{}
-	for _, netowrk := range networks {
-		if checkIfBushnetNetwork(netowrk.SSID) == nil {
-			userNetworks = append(userNetworks, netowrk)
+	for _, network := range networks {
+		if checkIfBushnetNetwork(network.SSID) == nil {
+			userNetworks = append(userNetworks, network)
 		}
 	}
 	return userNetworks, nil
