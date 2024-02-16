@@ -37,7 +37,7 @@ func (nsm *networkStateMachine) handleStateTransition(newState netmanagerclient.
 
 	// If going from CONNECTING to SCANNING then the connection probably failed.
 	if oldState == netmanagerclient.NS_WIFI_CONNECTING && newState == netmanagerclient.NS_WIFI_SCANNING {
-		// Check if connection failed.
+		// Check if connection failed. Note that this can be for multiple different reasons, wrong password, bad connection...
 		threeSecondsAgo := time.Now().Add(-3 * time.Second).Format("2006-01-02 15:04:05")
 		out, err := exec.Command("journalctl", "-u", "NetworkManager", "--no-pager", "--since", threeSecondsAgo).CombinedOutput()
 		if err != nil {
@@ -51,7 +51,6 @@ func (nsm *networkStateMachine) handleStateTransition(newState netmanagerclient.
 			// Reading the value of auth-retries is used to determine if the connection has failed.
 			if err := runNMCli("connection", "modify", oldConName, "connection.auth-retries", "1"); err != nil {
 				log.Printf("failed to set auth-retries to 1, '%s'", err)
-				return nil
 			}
 		}
 	}
@@ -71,8 +70,8 @@ func (nsm *networkStateMachine) handleStateTransition(newState netmanagerclient.
 
 	case netmanagerclient.NS_WIFI_CONNECTED:
 		// Set auth retries to 2 in case it was set to 1 previously.
-		if err := runNMCli("connection", newConName, "modify", "connection.auth-retries", "2"); err != nil {
-			return nil
+		if err := runNMCli("connection", "modify", newConName, "connection.auth-retries", "2"); err != nil {
+			log.Printf("failed to set auth-retries to 2, '%s'", err)
 		}
 	}
 	return nil

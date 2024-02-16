@@ -155,7 +155,7 @@ func savedWifiNetworks() error {
 		return err
 	}
 	for _, network := range networks {
-		log.Printf("ID: '%s', LastConnectionTime: '%s', AuthFailed: '%t'", network.ID, network.LastConnectionTime, network.AuthFailed)
+		log.Printf("ID: '%s', SSID: '%s', LastConnectionTime: '%s', AuthFailed: '%t'", network.ID, network.SSID, network.LastConnectionTime, network.AuthFailed)
 	}
 	return nil
 }

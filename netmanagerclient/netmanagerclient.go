@@ -226,7 +226,7 @@ func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
 			// The SSID may contain ':' so join all parts beyond the first with ':'
 			connName := strings.Join(parts[1:], ":")
 			if connType == "802-11-wireless" {
-				propMap, err := getConnectionProperties(connName, []string{"connection.auth-retries", "connection.timestamp"})
+				propMap, err := getConnectionProperties(connName, []string{"connection.auth-retries", "connection.timestamp", "802-11-wireless.ssid"})
 				if err != nil {
 					return nil, err
 				}
@@ -244,6 +244,7 @@ func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
 
 				networks = append(networks, WiFiNetwork{
 					ID:                 connName,
+					SSID:               propMap["802-11-wireless.ssid"],
 					AuthFailed:         authFailed,
 					LastConnectionTime: lastConnectionTime,
 				})
