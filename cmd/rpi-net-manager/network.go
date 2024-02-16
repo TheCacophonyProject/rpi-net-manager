@@ -7,64 +7,194 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	netmanagerclient "github.com/TheCacophonyProject/rpi-net-manager/netmanagerclient"
 )
 
-type networkHandler struct {
-	state              netmanagerclient.NetworkState
-	keepHotspotOnTimer time.Timer
-	keepHotspotOnUntil time.Time // This is used to keep track of how much time is left in the timer, as you can not read that value from the timer.
-	busy               bool
+type networkStateMachine struct {
+	mux                  sync.Mutex
+	state                netmanagerclient.NetworkState
+	connName             string
+	wifiScanConnectTimer *time.Timer
+	wifiScanTimer        *time.Timer
+	hotspotTimer         *time.Timer
+	keepHotspotOnUntil   time.Time
+	NetworkUpdateChannel chan struct{}
+	hotspotFallback      bool
 }
 
-// TODO Add state wifi running but not connected.
-// checkState will check if the network state need to be updated.
-func (nh *networkHandler) checkState() {
-	log.Println("Checking the network state")
-	switch nh.state {
-	case netmanagerclient.NS_WIFI:
-		// If state is on wifi, check if still connected and if not start up the hotspot.
-		connected, err := checkIsConnectedToNetwork()
+func (nsm *networkStateMachine) handleStateTransition(newState netmanagerclient.NetworkState, newConName string) error {
+	oldConName := nsm.connName
+	nsm.connName = newConName
+	oldState := nsm.state
+	if newState == oldState {
+		return nil
+	}
+	nsm.setState(newState)
+	log.Printf("State transition: %s -> %s, Active Connection: '%s'", oldState, newState, newConName)
+
+	// If going from CONNECTING to SCANNING then the connection probably failed.
+	if oldState == netmanagerclient.NS_WIFI_CONNECTING && newState == netmanagerclient.NS_WIFI_SCANNING {
+		// Check if connection failed.
+		threeSecondsAgo := time.Now().Add(-3 * time.Second).Format("2006-01-02 15:04:05")
+		out, err := exec.Command("journalctl", "-u", "NetworkManager", "--no-pager", "--since", threeSecondsAgo).CombinedOutput()
 		if err != nil {
-			log.Println(err)
-			return
+			return err
 		}
-		if !connected {
-			log.Println("Wifi disconnected, will try to connect again but will fall back to hotspot.")
-			err := nh.setupWifiWithRollback()
-			if err != nil {
-				log.Println(err)
+		if strings.Contains(string(out), fmt.Sprintf("Activation: failed for connection '%s'", oldConName)) {
+			log.Printf("Failed to connect to '%s'", oldConName)
+			// Set auth retries to 1, this will make it fail sooner in the future if it fails again.
+			// Don't want to disable autoconnect because it might be some other issue causing it to fail to connect.
+			// If it is successfully connect to in the future it will be set back to 2.
+			// Reading the value of auth-retries is used to determine if the connection has failed.
+			if err := runNMCli("connection", "modify", oldConName, "connection.auth-retries", "1"); err != nil {
+				log.Printf("failed to set auth-retries to 1, '%s'", err)
+				return nil
 			}
 		}
-	case netmanagerclient.NS_HOTSPOT:
-		// Nothing to do if in hotspot mode.
-	case netmanagerclient.NS_WIFI_SETUP:
-		// Nothing to do if wifi is being setup.
-	case netmanagerclient.NS_HOTSPOT_SETUP:
-		// Nothing to do if hotspot is being setup.
-	default:
-		log.Println("Unhandled network state:", nh.state)
+	}
+
+	switch newState {
+	case netmanagerclient.NS_WIFI_SCANNING:
+		log.Println("Restarting wifi scan timer")
+		resetTimer(nsm.wifiScanTimer, 10*time.Second)
+		// Reset timer for wifi to scan and connect to a network.
+		if oldState != netmanagerclient.NS_WIFI_CONNECTING {
+			resetTimer(nsm.wifiScanConnectTimer, 10*time.Minute)
+		}
+
+	case netmanagerclient.NS_HOTSPOT_RUNNING:
+		// Reset timer for hotspot when it has started up.
+		resetTimer(nsm.hotspotTimer, 5*time.Minute)
+
+	case netmanagerclient.NS_WIFI_CONNECTED:
+		// Set auth retries to 2 in case it was set to 1 previously.
+		if err := runNMCli("connection", newConName, "modify", "connection.auth-retries", "2"); err != nil {
+			return nil
+		}
+	}
+	return nil
+}
+
+// Utility function to safely reset a timer
+func resetTimer(timer *time.Timer, duration time.Duration) {
+	if timer == nil {
+		timer = time.NewTimer(duration)
+	}
+	if !(timer).Stop() {
+		select {
+		case <-(*timer).C: // Drain the channel if needed
+		default:
+		}
+	}
+	timer.Reset(duration)
+}
+
+func (nsm *networkStateMachine) runStateMachine() error {
+	log.Println("Starting Network Manager state machine")
+	if err := runNMCli("radio", "wifi", "on"); err != nil {
+		return err
+	}
+
+	// Timeout flags
+	wifiScanConnectTimeout := false
+	wifiScanTimeout := false
+	hotspotTimeout := false
+
+	nsm.mux.Lock()
+	defer nsm.mux.Unlock()
+
+	for {
+		// Look at the network setup to determine what network state the device is in.
+		newState, conName, err := detectState()
+		if err != nil {
+			return err
+		}
+		// Handle state transitions, this will reset appropriate timers if needed.
+		err = nsm.handleStateTransition(newState, conName)
+		if err != nil {
+			return err
+		}
+
+		// Update the state
+		switch nsm.state {
+		case netmanagerclient.NS_WIFI_OFF:
+			// Turn wifi back on if button is pressed, this will get handled elsewhere.
+		case netmanagerclient.NS_WIFI_SCANNING:
+			if wifiScanConnectTimeout {
+				wifiScanConnectTimeout = false
+				log.Println("Wifi scan connect timeout, powering off wifi")
+				if err := runNMCli("radio", "wifi", "off"); err != nil {
+					return err
+				}
+			}
+			if wifiScanTimeout {
+				wifiScanTimeout = false
+				if nsm.hotspotFallback {
+					nsm.hotspotFallback = false
+					log.Println("Enable hotspot")
+					if err := nsm.setupHotspot(); err != nil {
+						return err
+					}
+				}
+			}
+		case netmanagerclient.NS_WIFI_CONNECTING:
+			// Nothing to do
+		case netmanagerclient.NS_WIFI_CONNECTED:
+			// Nothing to do
+		case netmanagerclient.NS_HOTSPOT_STARTING:
+			// Nothing to do
+		case netmanagerclient.NS_HOTSPOT_RUNNING:
+			if hotspotTimeout {
+				hotspotTimeout = false
+				log.Println("Hotspot timeout, powering off hotspot")
+				nsm.setupWifi() // Enabling wifi will disable the hotspot.
+			}
+		default:
+			log.Println("Unhandled network state:", nsm.state)
+		}
+
+		nsm.mux.Unlock()
+		select {
+		case <-nsm.wifiScanConnectTimer.C:
+			if nsm.state == netmanagerclient.NS_WIFI_SCANNING || nsm.state == netmanagerclient.NS_WIFI_CONNECTING {
+				//log.Println("Wifi scan connect timeout")
+				wifiScanConnectTimeout = true
+			}
+		case <-nsm.wifiScanTimer.C:
+			if nsm.state == netmanagerclient.NS_WIFI_SCANNING {
+				//log.Println("Wifi scan timeout")
+				wifiScanTimeout = true
+			}
+		case <-nsm.hotspotTimer.C:
+			if nsm.state == netmanagerclient.NS_HOTSPOT_RUNNING {
+				//log.Println("Hotspot timeout")
+				hotspotTimeout = true
+			}
+		case <-nsm.NetworkUpdateChannel:
+			//log.Println("Network update")
+		}
+		nsm.mux.Lock()
 	}
 }
 
-func (nh *networkHandler) keepHotspotOnFor(keepOnFor time.Duration) {
+func (nsm *networkStateMachine) keepHotspotOnFor(keepOnFor time.Duration) {
 	newKeepOnUntil := time.Now().Add(keepOnFor)
-	if newKeepOnUntil.After(nh.keepHotspotOnUntil) {
+	if newKeepOnUntil.After(nsm.keepHotspotOnUntil) {
 		log.Println("Keep hotspot on for", keepOnFor)
-		nh.keepHotspotOnUntil = newKeepOnUntil
-		nh.keepHotspotOnTimer.Reset(keepOnFor)
+		nsm.keepHotspotOnUntil = newKeepOnUntil
+		resetTimer(nsm.hotspotTimer, keepOnFor)
 	} else {
-		log.Printf("Keep hotspot on for %s, but already on for %s", keepOnFor, time.Until(nh.keepHotspotOnUntil))
+		log.Printf("Keep hotspot on for %s, but already on for %s", keepOnFor, time.Until(nsm.keepHotspotOnUntil))
 	}
 }
 
-func (nh *networkHandler) setState(ns netmanagerclient.NetworkState) {
-	//TODO thread safety
-	if nh.state != ns {
-		log.Printf("State changed from %s to %s", nh.state, ns)
-		nh.state = ns
+func (nsm *networkStateMachine) setState(ns netmanagerclient.NetworkState) {
+	if nsm.state != ns {
+		log.Printf("State changed from %s to %s", nsm.state, ns)
+		nsm.state = ns
 		err := sendNewNetworkState(ns)
 		if err != nil {
 			log.Println(err)
@@ -82,91 +212,12 @@ func runNMCli(args ...string) error {
 
 const bushnetHotspot = "BushnetHotspot"
 
-func checkIsConnectedToNetwork() (bool, error) {
-	out, err := exec.Command("nmcli", "--fields", "DEVICE,STATE,CONNECTION", "--terse", "--color", "no", "device", "status").CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("error executing nmcli: %w", err)
-	}
-
-	lines := strings.Split(string(out), "\n")
-	for _, line := range lines {
-		parts := strings.Split(line, ":")
-		if len(parts) < 2 {
-			continue
-		}
-		device := parts[0]
-		state := parts[1]
-		connection := strings.Join(parts[2:], ":")
-		if device == "wlan0" {
-			if connection == bushnetHotspot {
-				return false, nil
-			}
-			return state == "connected", nil
-		}
-	}
-	return false, fmt.Errorf("could not find wlan0 network")
-}
-
-// TODO this can be improved by waiting less if no saved wifi network is available to connect to.
-func waitAndCheckIfConnectedToNetwork() (bool, error) {
-	for i := 0; i < 10; i++ {
-		connected, err := checkIsConnectedToNetwork()
-		if err != nil {
-			return false, err
-		}
-		if connected {
-			return true, nil
-		}
-		time.Sleep(time.Second)
-	}
-	return false, nil
-}
-
-func (nh *networkHandler) setupWifiWithRollback() error {
-	if nh.busy {
-		return fmt.Errorf("busy")
-	}
-	if nh.state != netmanagerclient.NS_WIFI {
-		if err := nh.setupWifi(); err != nil {
-			return err
-		}
-	}
-
-	nh.busy = true
-	defer func() { nh.busy = false }()
-
-	log.Println("WiFi network is up, checking that device can connect to a network.")
-	connected, err := checkIsConnectedToNetwork()
-	if err != nil {
+func (nsm *networkStateMachine) setupHotspot() error {
+	nsm.setState(netmanagerclient.NS_HOTSPOT_STARTING)
+	log.Println("Turn wifi radio on.")
+	if err := runNMCli("radio", "wifi", "on"); err != nil {
 		return err
 	}
-	if connected {
-		nh.setState(netmanagerclient.NS_WIFI)
-		log.Println("connected")
-		return nil
-	}
-	nh.setState(netmanagerclient.NS_WIFI_SETUP)
-	connected, err = waitAndCheckIfConnectedToNetwork()
-	if err != nil {
-		return err
-	}
-	if connected {
-		nh.setState(netmanagerclient.NS_WIFI)
-	} else {
-		log.Println("Failed to connect to wifi. Starting up hotspot.")
-		nh.busy = false
-		return nh.setupHotspot()
-	}
-	return nil
-}
-
-func (nh *networkHandler) setupHotspot() error {
-	if nh.busy {
-		return fmt.Errorf("busy")
-	}
-	nh.busy = true
-	defer func() { nh.busy = false }()
-	nh.setState(netmanagerclient.NS_HOTSPOT_SETUP)
 
 	log.Println("Setting up network for hosting a hotspot.")
 	networks, err := netmanagerclient.ListSavedWifiNetworks()
@@ -175,7 +226,7 @@ func (nh *networkHandler) setupHotspot() error {
 	}
 	hotspotConfigured := false
 	for _, network := range networks {
-		if network.SSID == bushnetHotspot {
+		if network.ID == bushnetHotspot {
 			hotspotConfigured = true
 		}
 	}
@@ -195,6 +246,7 @@ func (nh *networkHandler) setupHotspot() error {
 		}
 	}
 
+	log.Println("Starting hotspot...")
 	err = runNMCli("connection", "up", bushnetHotspot)
 	if err != nil {
 		return err
@@ -209,8 +261,64 @@ func (nh *networkHandler) setupHotspot() error {
 		return err
 	}
 
-	nh.setState(netmanagerclient.NS_HOTSPOT)
 	return nil
+}
+
+// Function that will listen for dbus
+
+func detectState() (netmanagerclient.NetworkState, string, error) {
+	out, err := exec.Command("nmcli", "radio", "wifi").CombinedOutput()
+	if err != nil {
+		return netmanagerclient.NS_ERROR, "", fmt.Errorf("error getting wifi radio state %s, err: %s", out, err)
+	}
+	radioState := strings.TrimSpace(string(out))
+	if radioState == "disabled" {
+		return netmanagerclient.NS_WIFI_OFF, "", nil
+	} else if radioState != "enabled" {
+		return netmanagerclient.NS_ERROR, "", fmt.Errorf("unknown radio state '%s'", radioState)
+	}
+
+	// Get name of active network, if there is one.
+	wifiConnectionName := ""
+	out, err = exec.Command("nmcli", "--terse", "--fields", "TYPE,NAME", "connection", "show", "--active").CombinedOutput()
+	if err != nil {
+		return netmanagerclient.NS_ERROR, "", fmt.Errorf("error running list of active connections %s, err: %s", out, err)
+	}
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		parts := strings.Split(line, ":")
+		if len(parts) < 2 {
+			continue
+		}
+		if parts[0] == "802-11-wireless" {
+			wifiConnectionName = strings.Join(parts[1:], ":")
+		}
+	}
+
+	// No active network found, wifi is just scanning
+	if wifiConnectionName == "" {
+		return netmanagerclient.NS_WIFI_SCANNING, "", nil
+	}
+	// Active network is the bushnet hotspot
+	if wifiConnectionName == bushnetHotspot {
+		return netmanagerclient.NS_HOTSPOT_RUNNING, wifiConnectionName, nil
+	}
+
+	// Connected to a network. Check if it has a IP address.
+	// If it doesn't have an IP address it is still trying to connect, could have the wrong password.
+	out, err = exec.Command("nmcli", "--terse", "--fields", "IP4.ADDRESS", "connection", "show", wifiConnectionName).CombinedOutput()
+	if err != nil {
+		return netmanagerclient.NS_ERROR, "", fmt.Errorf("error checking ip address of connection: %s, err: %s", out, err)
+	}
+
+	ipAddress := strings.TrimPrefix(string(out), "IP4.ADDRESS[1]:")
+	ipAddress = strings.TrimSpace(ipAddress)
+
+	if ipAddress == "" {
+		return netmanagerclient.NS_WIFI_CONNECTING, wifiConnectionName, nil
+	} else {
+		return netmanagerclient.NS_WIFI_CONNECTED, wifiConnectionName, nil
+	}
 }
 
 const router_ip = "192.168.4.1"
@@ -246,14 +354,7 @@ func createConfigFile(name string, config []string) error {
 	return nil
 }
 
-func (nh *networkHandler) setupWifi() error {
-	if nh.busy {
-		return fmt.Errorf("busy")
-	}
-	nh.busy = true
-	defer func() { nh.busy = false }()
-	nh.setState(netmanagerclient.NS_WIFI_SETUP)
-
+func (nsm *networkStateMachine) setupWifi() error {
 	// Deactivate hotspot if it is active, this will enable the wifi again.
 	out, err := exec.Command("nmcli", "-t", "-f", "NAME,STATE", "connection", "show", "--active").CombinedOutput()
 	if err != nil {
@@ -267,6 +368,11 @@ func (nh *networkHandler) setupWifi() error {
 
 	if strings.Contains(string(out), bushnetHotspot) {
 		return runNMCli("connection", "down", bushnetHotspot)
+	}
+
+	log.Println("Turn wifi radio on.")
+	if err := runNMCli("radio", "wifi", "on"); err != nil {
+		return err
 	}
 	return nil
 }

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -13,22 +15,31 @@ import (
 type NetworkState string
 
 const (
-	NS_WIFI          NetworkState = "WIFI"
-	NS_WIFI_SETUP    NetworkState = "WIFI_SETUP"
-	NS_HOTSPOT       NetworkState = "HOTSPOT"
-	NS_HOTSPOT_SETUP NetworkState = "HOTSPOT_SETUP"
+	NS_INIT             NetworkState = "Init"             // Initial state, before any network state changes
+	NS_WIFI_OFF         NetworkState = "WIFI_OFF"         // WIFI Radio is off.
+	NS_WIFI_SETUP       NetworkState = "WIFI_SETUP"       // WIFI is being setup.
+	NS_WIFI_SCANNING    NetworkState = "WIFI_SCANNING"    // WIFI is scanning for networks to connect to.
+	NS_WIFI_CONNECTING  NetworkState = "WIFI_CONNECTING"  // WIFI is trying to connect to a network.
+	NS_WIFI_CONNECTED   NetworkState = "WIFI_CONNECTED"   // WIFI has connected to a network.
+	NS_HOTSPOT_STARTING NetworkState = "HOTSPOT_STARTING" // Hotspot is being setup.
+	NS_HOTSPOT_RUNNING  NetworkState = "HOTSPOT_RUNNING"  // Hotspot is running.
+	NS_ERROR            NetworkState = "Error with network"
 )
 
 func stringToNetworkState(s string) (NetworkState, error) {
 	switch s {
-	case string(NS_WIFI):
-		return NS_WIFI, nil
-	case string(NS_WIFI_SETUP):
-		return NS_WIFI_SETUP, nil
-	case string(NS_HOTSPOT):
-		return NS_HOTSPOT, nil
-	case string(NS_HOTSPOT_SETUP):
-		return NS_HOTSPOT_SETUP, nil
+	case string(NS_WIFI_OFF):
+		return NS_WIFI_OFF, nil
+	case string(NS_WIFI_SCANNING):
+		return NS_WIFI_SCANNING, nil
+	case string(NS_WIFI_CONNECTING):
+		return NS_WIFI_CONNECTING, nil
+	case string(NS_WIFI_CONNECTED):
+		return NS_WIFI_CONNECTED, nil
+	case string(NS_HOTSPOT_STARTING):
+		return NS_HOTSPOT_STARTING, nil
+	case string(NS_HOTSPOT_RUNNING):
+		return NS_HOTSPOT_RUNNING, nil
 	default:
 		return "", errors.New("invalid network state")
 	}
@@ -61,8 +72,7 @@ func ReadState() (NetworkState, error) {
 }
 
 // EnableWifi will enable the wifi.
-// If the wifi is already enabled it will return unless force is true,
-// then it will start up the wifi again.
+// The force parameter doesn't do anything at the moment.
 func EnableWifi(force bool) error {
 	log.Println("Making call to EnableWifi")
 	_, err := eventsDbusCall("EnableWifi", force)
@@ -141,10 +151,12 @@ func GetStateChanges() (chan NetworkState, chan<- struct{}, error) {
 }
 
 type WiFiNetwork struct {
-	SSID    string
-	Quality string
-	ID      string
-	InUse   bool
+	SSID               string
+	Quality            string
+	ID                 string
+	InUse              bool
+	AuthFailed         bool
+	LastConnectionTime time.Time
 }
 
 func ScanWiFiNetworks() ([]WiFiNetwork, error) {
@@ -212,9 +224,29 @@ func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
 		if len(parts) >= 2 {
 			connType := parts[0]
 			// The SSID may contain ':' so join all parts beyond the first with ':'
-			connSSID := strings.Join(parts[1:], ":")
+			connName := strings.Join(parts[1:], ":")
 			if connType == "802-11-wireless" {
-				networks = append(networks, WiFiNetwork{SSID: connSSID})
+				propMap, err := getConnectionProperties(connName, []string{"connection.auth-retries", "connection.timestamp"})
+				if err != nil {
+					return nil, err
+				}
+
+				sec, err := strconv.ParseInt(propMap["connection.timestamp"], 10, 64)
+				lastConnectionTime := time.Time{}
+				if err != nil {
+					log.Printf("Failed to part time '%s'", err)
+					return nil, err
+				} else {
+					lastConnectionTime = time.Unix(sec, 0)
+				}
+				// if auth-retries is 1, last time the connection failed.
+				authFailed := propMap["connection.auth-retries"] == "1"
+
+				networks = append(networks, WiFiNetwork{
+					ID:                 connName,
+					AuthFailed:         authFailed,
+					LastConnectionTime: lastConnectionTime,
+				})
 			}
 
 		} else {
@@ -223,7 +255,24 @@ func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
 	}
 
 	return networks, nil
+}
 
+func getConnectionProperties(connection string, properties []string) (map[string]string, error) {
+	out, err := exec.Command("nmcli", "-f", strings.Join(properties, ","), "-t", "connection", "show", connection).CombinedOutput()
+	if err != nil {
+		return nil, err
+	}
+	propMap := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ":")
+		if len(parts) >= 2 {
+			propMap[parts[0]] = strings.Join(parts[1:], ":")
+		}
+	}
+	return propMap, nil
 }
 
 type InputError struct {
@@ -272,6 +321,8 @@ func AddWifiNetwork(ssid, psk string) error {
 	out, err := exec.Command(
 		"nmcli", "connection", "add",
 		"connection.type", "802-11-wireless",
+		"connection.auth-retries", "2",
+		//"connection.autoconnect-retries", "2", //TODO look into this option more.
 		"wifi-sec.key-mgmt", "wpa-psk",
 		"connection.id", ssid,
 		"ipv4.route-metric", "10", // To make wifi preferable over the USB (modem) connection

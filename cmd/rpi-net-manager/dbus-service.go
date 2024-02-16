@@ -13,10 +13,10 @@ import (
 )
 
 type service struct {
-	nh *networkHandler
+	nsm *networkStateMachine
 }
 
-func startDBusService(networkHandler *networkHandler) error {
+func startDBusService(nsm *networkStateMachine) error {
 	log.Println("Starting RPiNetManager service")
 	conn, err := dbus.SystemBus()
 	if err != nil {
@@ -31,7 +31,7 @@ func startDBusService(networkHandler *networkHandler) error {
 	}
 
 	s := &service{
-		nh: networkHandler,
+		nsm: nsm,
 	}
 	if err := conn.Export(s, netmanagerclient.DbusPath, netmanagerclient.DbusInterface); err != nil {
 		return err
@@ -67,38 +67,36 @@ func sendBroadcast(signal string, payload []interface{}) error {
 }
 
 func (s service) ReadState() (string, *dbus.Error) {
-	return string(s.nh.state), nil
+	return string(s.nsm.state), nil
 }
-
-/*
-func (s service) ReconfigureWifi() *dbus.Error {
-	go runFuncLogErr(s.nh.reconfigureWifi)
-	return nil
-}
-*/
 
 func (s service) EnableWifi(force bool) *dbus.Error {
-	//TODO use force param
-	runFuncLogErr(s.nh.setupWifiWithRollback)
+	s.nsm.mux.Lock()
+	defer s.nsm.mux.Unlock()
+	s.nsm.hotspotFallback = true
+	runFuncLogErr(s.nsm.setupWifi)
 	return nil
 }
 
 func (s service) EnableHotspot(force bool) *dbus.Error {
-	//TODO use force param
-	runFuncLogErr(s.nh.setupHotspot)
+	s.nsm.mux.Lock()
+	defer s.nsm.mux.Unlock()
+	runFuncLogErr(s.nsm.setupHotspot)
 	return nil
 }
 
 func (s service) KeepHotspotOnFor(seconds int) *dbus.Error {
-	if s.nh.state != netmanagerclient.NS_HOTSPOT && s.nh.state != netmanagerclient.NS_HOTSPOT_SETUP {
+	s.nsm.mux.Lock()
+	defer s.nsm.mux.Unlock()
+	if s.nsm.state != netmanagerclient.NS_HOTSPOT_RUNNING && s.nsm.state != netmanagerclient.NS_HOTSPOT_STARTING {
 		return dbusErr(errors.New("hotspot is not enabled"))
 	}
-	s.nh.keepHotspotOnFor(time.Duration(seconds) * time.Second)
+	s.nsm.keepHotspotOnFor(time.Duration(seconds) * time.Second)
 	return nil
 }
 
 func (s service) CheckState() *dbus.Error {
-	go s.nh.checkState()
+	_, _, _ = detectState()
 	return nil
 }
 
