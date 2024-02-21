@@ -160,7 +160,7 @@ type WiFiNetwork struct {
 }
 
 func ScanWiFiNetworks() ([]WiFiNetwork, error) {
-	//TODO do we need to add '--escape no' to the nmcli command?
+	// TODO do we need to add '--escape no' to the nmcli command?
 	out, err := exec.Command("nmcli", "--terse", "--fields", "IN-USE,SIGNAL,SSID", "device", "wifi", "list", "--rescan", "yes").CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list wifi networks: %v, output: %s", err, out)
@@ -206,6 +206,20 @@ func ListUserSavedWifiNetworks() ([]WiFiNetwork, error) {
 	return userNetworks, nil
 }
 
+// FindNetworkBySSID searches for a network by SSID in the list of WiFi networks
+func FindNetworkBySSID(ssid string) (WiFiNetwork, bool) {
+	networks, err := ListUserSavedWifiNetworks()
+	if err != nil {
+		log.Fatalf("Error listing saved WiFi networks: %v", err)
+		return WiFiNetwork{}, false
+	}
+	for _, network := range networks {
+		if network.SSID == ssid {
+			return network, true
+		}
+	}
+	return WiFiNetwork{}, false
+}
 func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
 	out, err := exec.Command("nmcli", "--terse", "--escape", "no", "--fields", "TYPE,NAME", "connection", "show").CombinedOutput()
 	if err != nil {
@@ -284,9 +298,11 @@ func (e InputError) Error() string {
 	return fmt.Sprintf("Input Error: %s", e.Message)
 }
 
-var ErrNetworkAlreadyExists = InputError{Message: "a network with the given SSID already exists"}
-var ErrPSKTooShort = InputError{Message: "the given PSK is too short, must be at least 8 characters long"}
-var ErrBushnetNetwork = InputError{Message: "the given SSID is a Bushnet network so can't be modified"}
+var (
+	ErrNetworkAlreadyExists = InputError{Message: "a network with the given SSID already exists"}
+	ErrPSKTooShort          = InputError{Message: "the given PSK is too short, must be at least 8 characters long"}
+	ErrBushnetNetwork       = InputError{Message: "the given SSID is a Bushnet network so can't be modified"}
+)
 
 func checkIfBushnetNetwork(ssid string) error {
 	ssid = strings.ToLower(ssid)
@@ -305,6 +321,34 @@ func checkIfNetworkExists(ssid string) error {
 		if network.SSID == ssid {
 			return ErrNetworkAlreadyExists
 		}
+	}
+	return nil
+}
+
+// Conects to an existing network
+func ConnectWifiNetwork(ssid string) error {
+	if err := checkIfBushnetNetwork(ssid); err != nil {
+		return err
+	}
+	out, err := exec.Command("nmcli", "connection", "up", ssid).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to connect to network: %v, output: %s", err, out)
+	}
+	return nil
+}
+
+func ModifyWifiNetwork(ssid, psk string) error {
+	if len(psk) < 8 {
+		return ErrPSKTooShort
+	}
+	if err := checkIfBushnetNetwork(ssid); err != nil {
+		return err
+	}
+	out, err := exec.Command(
+		"nmcli", "connection", "modify", ssid,
+		"wifi-sec.psk", psk).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to modify network: %v, output: %s", err, out)
 	}
 	return nil
 }
@@ -336,13 +380,39 @@ func AddWifiNetwork(ssid, psk string) error {
 	return nil
 }
 
-func RemoveWifiNetwork(ssid string) error {
+func RemoveWifiNetwork(ssid string, disconnect bool, startHotspot bool) error {
 	if err := checkIfBushnetNetwork(ssid); err != nil {
 		return err
 	}
 	out, err := exec.Command("nmcli", "connection", "delete", ssid).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to remove network: %v, output: %s", err, out)
+	}
+
+	if disconnect {
+		out, err = exec.Command("nmcli", "connection", "down", ssid).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed to disconnect network: %v, output: %s", err, out)
+		}
+	}
+
+	if startHotspot {
+		EnableHotspot(true)
+	}
+	return nil
+}
+
+func DisconnectWifiNetwork(ssid string, startHotspot bool) error {
+	if err := checkIfBushnetNetwork(ssid); err != nil {
+		return err
+	}
+	out, err := exec.Command("nmcli", "connection", "down", ssid).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to forget network: %v, output: %s", err, out)
+	}
+
+	if startHotspot {
+		EnableHotspot(true)
 	}
 	return nil
 }

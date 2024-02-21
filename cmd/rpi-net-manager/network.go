@@ -159,21 +159,21 @@ func (nsm *networkStateMachine) runStateMachine() error {
 		select {
 		case <-nsm.wifiScanConnectTimer.C:
 			if nsm.state == netmanagerclient.NS_WIFI_SCANNING || nsm.state == netmanagerclient.NS_WIFI_CONNECTING {
-				//log.Println("Wifi scan connect timeout")
+				// log.Println("Wifi scan connect timeout")
 				wifiScanConnectTimeout = true
 			}
 		case <-nsm.wifiScanTimer.C:
 			if nsm.state == netmanagerclient.NS_WIFI_SCANNING {
-				//log.Println("Wifi scan timeout")
+				// log.Println("Wifi scan timeout")
 				wifiScanTimeout = true
 			}
 		case <-nsm.hotspotTimer.C:
 			if nsm.state == netmanagerclient.NS_HOTSPOT_RUNNING {
-				//log.Println("Hotspot timeout")
+				// log.Println("Hotspot timeout")
 				hotspotTimeout = true
 			}
 		case <-nsm.NetworkUpdateChannel:
-			//log.Println("Network update")
+			// log.Println("Network update")
 		}
 		nsm.mux.Lock()
 	}
@@ -248,15 +248,6 @@ func (nsm *networkStateMachine) setupHotspot() error {
 	log.Println("Starting hotspot...")
 	err = runNMCli("connection", "up", bushnetHotspot)
 	if err != nil {
-		return err
-	}
-
-	if err := createDNSConfig(router_ip, "192.168.4.2,192.168.4.20"); err != nil {
-		return err
-	}
-
-	log.Printf("Starting DNS...")
-	if err := exec.Command("systemctl", "restart", "dnsmasq").Run(); err != nil {
 		return err
 	}
 
