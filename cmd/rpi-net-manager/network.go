@@ -251,6 +251,14 @@ func (nsm *networkStateMachine) setupHotspot() error {
 		return err
 	}
 
+	if err := createDNSConfig(router_ip, "192.168.4.2,192.168.4.20"); err != nil {
+		return err
+	}
+
+	log.Printf("Starting DNS...")
+	if err := exec.Command("systemctl", "restart", "dnsmasq").Run(); err != nil {
+		return err
+	}
 	return nil
 }
 
