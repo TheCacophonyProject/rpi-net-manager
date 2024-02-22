@@ -167,7 +167,7 @@ func addWifiNetwork(ssid, pass string) error {
 
 func removeWifiNetwork(ssid string) error {
 	log.Println("Removing network. SSID: ", ssid)
-	return netmanagerclient.RemoveWifiNetwork(ssid)
+	return netmanagerclient.RemoveWifiNetwork(ssid, false, false)
 }
 
 func enableWifi(args Args) error {
