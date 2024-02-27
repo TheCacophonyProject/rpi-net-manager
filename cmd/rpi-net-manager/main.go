@@ -8,6 +8,7 @@ import (
 
 	netmanagerclient "github.com/TheCacophonyProject/rpi-net-manager/netmanagerclient"
 	"github.com/alexflint/go-arg"
+	"github.com/godbus/dbus/v5"
 )
 
 var version = "<not set>"
@@ -33,7 +34,6 @@ type subcommand struct{}
 type Args struct {
 	Service              *subcommand    `arg:"subcommand:service" help:"start service"`
 	ReadState            *ReadState     `arg:"subcommand:read-state" help:"read the state of the network"`
-	ReconfigureWifi      *subcommand    `arg:"subcommand:reconfigure-wifi" help:"reconfigure the wifi network"`
 	SavedWifiNetworks    *subcommand    `arg:"subcommand:saved-wifi-networks" help:"show saved wifi networks"`
 	AddWifiNetwork       *AddNetwork    `arg:"subcommand:add-wifi-network" help:"add a network"`
 	RemoveWifiNetwork    *RemoveNetwork `arg:"subcommand:remove-wifi-network" help:"remove a network"`
@@ -67,6 +67,11 @@ func runMain() error {
 	args := procArgs()
 	log.SetFlags(0)
 
+	log.Printf("Running version: %s", version)
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("rpi-net-manager must be run as root")
+	}
+
 	if args.Service != nil {
 		if err := startService(); err != nil {
 			return err
@@ -77,8 +82,6 @@ func runMain() error {
 		return nil
 	} else if args.ReadState != nil {
 		return readState(args)
-	} else if args.ReconfigureWifi != nil {
-		return reconfigureWifi()
 	} else if args.SavedWifiNetworks != nil {
 		return savedWifiNetworks()
 	} else if args.AddWifiNetwork != nil {
@@ -99,48 +102,29 @@ func runMain() error {
 }
 
 func startService() error {
-	nh := &networkHandler{}
-	nh.keepHotspotOnTimer = *time.NewTimer(0)
-	nh.keepHotspotOnUntil = time.Now()
-	if err := startDBusService(nh); err != nil {
+	c, done, err := makeNetworkUpdateChan()
+	if err != nil {
 		return err
 	}
-	hotspotUsageTimeout := 5 * time.Minute
-	log.Println("Setting up wifi.")
-	if err := nh.setupWifi(); err != nil {
-		log.Println("Failed to setup wifi:", err)
-		return nil
+	defer close(done)
+
+	nsm := &networkStateMachine{
+		NetworkUpdateChannel: c,
+		state:                netmanagerclient.NS_INIT,
+		wifiScanConnectTimer: time.NewTimer(10 * time.Minute),
+		wifiScanTimer:        time.NewTimer(10 * time.Second),
+		hotspotTimer:         time.NewTimer(5 * time.Minute),
+		hotspotFallback:      true,
 	}
 
-	log.Println("Checking if device is connected to a network.")
-	connected, err := waitAndCheckIfConnectedToNetwork()
-	if err != nil {
-		log.Println("Error checking if device connected to network:", err)
-		return nil
-	}
-	if connected {
-		log.Println("Connected to network. Not starting up hotspot.")
-		nh.setState(netmanagerclient.NS_WIFI)
-		return nil
+	if err := startDBusService(nsm); err != nil {
+		return err
 	}
 
-	log.Println("Starting hotspot")
-	if err := nh.setupHotspot(); err != nil {
-		log.Println("Failed to setup hotspot:", err)
-		return nil
+	if err := nsm.runStateMachine(); err != nil {
+		return err
 	}
-	// Clear the timer
-	select {
-	case <-nh.keepHotspotOnTimer.C:
-	default:
-	}
-	nh.keepHotspotOnFor(hotspotUsageTimeout)
-	//hotspotUsageTimer := time.NewTimer(hotspotUsageTimeout)
-	<-nh.keepHotspotOnTimer.C // Hotspot has not been used for a while, stop it.
-	log.Println("Hotspot timer expired, stopping hotspot and starting wifi.")
-	if err := nh.setupWifi(); err != nil {
-		log.Println("Failed to stop hotspot:", err)
-	}
+
 	return nil
 }
 
@@ -164,11 +148,6 @@ func readState(args Args) error {
 	return nil
 }
 
-func reconfigureWifi() error {
-	log.Println("Reconfiguring wifi.")
-	return netmanagerclient.ReconfigureWifi()
-}
-
 func savedWifiNetworks() error {
 	log.Println("Listing saved wifi networks.")
 	networks, err := netmanagerclient.ListSavedWifiNetworks()
@@ -176,7 +155,7 @@ func savedWifiNetworks() error {
 		return err
 	}
 	for _, network := range networks {
-		log.Println(network)
+		log.Printf("ID: '%s', SSID: '%s', LastConnectionTime: '%s', AuthFailed: '%t'", network.ID, network.SSID, network.LastConnectionTime, network.AuthFailed)
 	}
 	return nil
 }
@@ -188,7 +167,7 @@ func addWifiNetwork(ssid, pass string) error {
 
 func removeWifiNetwork(ssid string) error {
 	log.Println("Removing network. SSID: ", ssid)
-	return netmanagerclient.RemoveWifiNetwork(ssid)
+	return netmanagerclient.RemoveWifiNetwork(ssid, false, false)
 }
 
 func enableWifi(args Args) error {
@@ -207,7 +186,7 @@ func scanNetwork() error {
 		return err
 	}
 	for _, network := range networks {
-		log.Printf("SSID: '%s', Quality: '%s'", network.SSID, network.Quality)
+		log.Printf("SSID: '%s', Quality: '%s', InUse: '%t'", network.SSID, network.Quality, network.InUse)
 	}
 	return nil
 }
@@ -219,4 +198,62 @@ func checkState() error {
 		return err
 	}
 	return nil
+}
+
+// GetStateChanges will start listening for state changes.
+func makeNetworkUpdateChan() (chan struct{}, chan<- struct{}, error) {
+	stateChan := make(chan struct{}, 10)
+	done := make(chan struct{})
+
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to connect to System Bus: %v", err)
+	}
+
+	// Subscribe to properties changed signal for NetworkManager
+	conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0,
+		"type='signal',interface='org.freedesktop.DBus.Properties',"+
+			"sender='org.freedesktop.NetworkManager',"+
+			"path='/org/freedesktop/NetworkManager',"+
+			"arg0namespace='org.freedesktop.NetworkManager'")
+
+	c := make(chan *dbus.Signal, 10)
+	conn.Signal(c)
+
+	fmt.Println("Listening for network changes...")
+
+	go func() {
+		defer close(stateChan)
+		defer conn.Close()
+
+		for {
+			select {
+			case v := <-c:
+				if v.Name == "org.freedesktop.DBus.Properties.PropertiesChanged" && len(v.Body) >= 3 {
+					interfaceName, ok := v.Body[0].(string)
+					if !ok {
+						continue
+					}
+					// Check if the signal is for NetworkManager
+					if interfaceName == "org.freedesktop.NetworkManager" {
+						changes, ok := v.Body[1].(map[string]dbus.Variant)
+						if !ok {
+							continue
+						}
+						// Only handle specific changes
+						if _, exists := changes["Connectivity"]; exists {
+							stateChan <- struct{}{}
+						}
+						if _, exists := changes["ActiveConnections"]; exists {
+							stateChan <- struct{}{}
+						}
+					}
+				}
+			case <-done:
+				log.Println("Stopping signal listener")
+				return
+			}
+		}
+	}()
+	return stateChan, done, nil
 }

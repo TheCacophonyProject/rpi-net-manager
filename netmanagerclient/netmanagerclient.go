@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
-	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -14,22 +15,31 @@ import (
 type NetworkState string
 
 const (
-	NS_WIFI          NetworkState = "WIFI"
-	NS_WIFI_SETUP    NetworkState = "WIFI_SETUP"
-	NS_HOTSPOT       NetworkState = "HOTSPOT"
-	NS_HOTSPOT_SETUP NetworkState = "HOTSPOT_SETUP"
+	NS_INIT             NetworkState = "Init"             // Initial state, before any network state changes
+	NS_WIFI_OFF         NetworkState = "WIFI_OFF"         // WIFI Radio is off.
+	NS_WIFI_SETUP       NetworkState = "WIFI_SETUP"       // WIFI is being setup.
+	NS_WIFI_SCANNING    NetworkState = "WIFI_SCANNING"    // WIFI is scanning for networks to connect to.
+	NS_WIFI_CONNECTING  NetworkState = "WIFI_CONNECTING"  // WIFI is trying to connect to a network.
+	NS_WIFI_CONNECTED   NetworkState = "WIFI_CONNECTED"   // WIFI has connected to a network.
+	NS_HOTSPOT_STARTING NetworkState = "HOTSPOT_STARTING" // Hotspot is being setup.
+	NS_HOTSPOT_RUNNING  NetworkState = "HOTSPOT_RUNNING"  // Hotspot is running.
+	NS_ERROR            NetworkState = "Error with network"
 )
 
 func stringToNetworkState(s string) (NetworkState, error) {
 	switch s {
-	case string(NS_WIFI):
-		return NS_WIFI, nil
-	case string(NS_WIFI_SETUP):
-		return NS_WIFI_SETUP, nil
-	case string(NS_HOTSPOT):
-		return NS_HOTSPOT, nil
-	case string(NS_HOTSPOT_SETUP):
-		return NS_HOTSPOT_SETUP, nil
+	case string(NS_WIFI_OFF):
+		return NS_WIFI_OFF, nil
+	case string(NS_WIFI_SCANNING):
+		return NS_WIFI_SCANNING, nil
+	case string(NS_WIFI_CONNECTING):
+		return NS_WIFI_CONNECTING, nil
+	case string(NS_WIFI_CONNECTED):
+		return NS_WIFI_CONNECTED, nil
+	case string(NS_HOTSPOT_STARTING):
+		return NS_HOTSPOT_STARTING, nil
+	case string(NS_HOTSPOT_RUNNING):
+		return NS_HOTSPOT_RUNNING, nil
 	default:
 		return "", errors.New("invalid network state")
 	}
@@ -61,16 +71,8 @@ func ReadState() (NetworkState, error) {
 	return stringToNetworkState(stateStr)
 }
 
-// ReconfigureWifi will reconfigure the wifi network.
-// Call this after adding a new wifi network for it to be loaded.
-func ReconfigureWifi() error {
-	_, err := eventsDbusCall("ReconfigureWifi")
-	return err
-}
-
 // EnableWifi will enable the wifi.
-// If the wifi is already enabled it will return unless force is true,
-// then it will start up the wifi again.
+// The force parameter doesn't do anything at the moment.
 func EnableWifi(force bool) error {
 	log.Println("Making call to EnableWifi")
 	_, err := eventsDbusCall("EnableWifi", force)
@@ -149,68 +151,143 @@ func GetStateChanges() (chan NetworkState, chan<- struct{}, error) {
 }
 
 type WiFiNetwork struct {
-	SSID    string
-	Quality string
-	ID      string
+	SSID               string
+	Quality            string
+	ID                 string
+	InUse              bool
+	AuthFailed         bool
+	LastConnectionTime time.Time
 }
 
 func ScanWiFiNetworks() ([]WiFiNetwork, error) {
-	cmd := exec.Command("iwlist", "wlan0", "scan")
-	output, err := cmd.Output()
+	// TODO do we need to add '--escape no' to the nmcli command?
+	out, err := exec.Command("nmcli", "--terse", "--fields", "IN-USE,SIGNAL,SSID", "device", "wifi", "list", "--rescan", "yes").CombinedOutput()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list wifi networks: %v, output: %s", err, out)
 	}
-	networks := []WiFiNetwork{}
-	lines := strings.Split(string(output), "\n")
-	network := WiFiNetwork{}
+
+	lines := strings.Split(string(out), "\n")
+
+	var networks []WiFiNetwork
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Cell") {
-			network = WiFiNetwork{}
+		if line == "" {
+			continue
 		}
-		if strings.HasPrefix(line, "ESSID") {
-			matches := regexp.MustCompile(`ESSID:"(.*)"`).FindStringSubmatch(line)
-			if len(matches) == 2 {
-				network.SSID = matches[1]
-				if network.SSID != "" {
-					networks = append(networks, network)
-				}
-			} else {
-				log.Println(matches)
-				log.Println("Failed to parse SSID:", line)
-			}
-		}
-		if strings.HasPrefix(line, "Quality") {
-			matches := regexp.MustCompile(`Quality=([^ ]+)`).FindStringSubmatch(line)
-			if len(matches) == 2 {
-				network.Quality = matches[1]
-			} else {
-				log.Println("Failed to parse Quality:", line)
-			}
+		parts := strings.Split(line, ":")
+
+		if len(parts) >= 3 {
+			// The SSID may contain ':' so join all parts beyond the second with ':'
+			ssid := strings.Join(parts[2:], ":")
+
+			networks = append(networks, WiFiNetwork{
+				SSID:    ssid,
+				Quality: parts[1],
+				InUse:   parts[0] == "*",
+			})
+		} else {
+			return nil, fmt.Errorf("failed to parse line: %s", line)
 		}
 	}
+
 	return networks, nil
 }
 
-func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
-	cmd := exec.Command("wpa_cli", "-i", "wlan0", "list_networks")
-	output, err := cmd.Output()
+func ListUserSavedWifiNetworks() ([]WiFiNetwork, error) {
+	networks, err := ListSavedWifiNetworks()
 	if err != nil {
 		return nil, err
 	}
-	networks := []WiFiNetwork{}
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		bits := strings.Split(line, "\t")
-		if len(bits) > 1 {
-			networks = append(networks, WiFiNetwork{
-				ID:   bits[0],
-				SSID: bits[1],
-			})
+	userNetworks := []WiFiNetwork{}
+	for _, network := range networks {
+		if checkIfBushnetNetwork(network.SSID) == nil {
+			userNetworks = append(userNetworks, network)
 		}
 	}
+	return userNetworks, nil
+}
+
+// FindNetworkBySSID searches for a network by SSID in the list of WiFi networks
+func FindNetworkBySSID(ssid string) (WiFiNetwork, bool) {
+	networks, err := ListUserSavedWifiNetworks()
+	if err != nil {
+		log.Fatalf("Error listing saved WiFi networks: %v", err)
+		return WiFiNetwork{}, false
+	}
+	for _, network := range networks {
+		if network.SSID == ssid {
+			return network, true
+		}
+	}
+	return WiFiNetwork{}, false
+}
+func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
+	out, err := exec.Command("nmcli", "--terse", "--escape", "no", "--fields", "TYPE,NAME", "connection", "show").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list saved networks: %v, output: %s", err, out)
+	}
+
+	lines := strings.Split(string(out), "\n")
+
+	var networks []WiFiNetwork
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ":")
+
+		if len(parts) >= 2 {
+			connType := parts[0]
+			// The SSID may contain ':' so join all parts beyond the first with ':'
+			connName := strings.Join(parts[1:], ":")
+			if connType == "802-11-wireless" {
+				propMap, err := getConnectionProperties(connName, []string{"connection.auth-retries", "connection.timestamp", "802-11-wireless.ssid"})
+				if err != nil {
+					return nil, err
+				}
+
+				sec, err := strconv.ParseInt(propMap["connection.timestamp"], 10, 64)
+				lastConnectionTime := time.Time{}
+				if err != nil {
+					log.Printf("Failed to part time '%s'", err)
+					return nil, err
+				} else {
+					lastConnectionTime = time.Unix(sec, 0)
+				}
+				// if auth-retries is 1, last time the connection failed.
+				authFailed := propMap["connection.auth-retries"] == "1"
+
+				networks = append(networks, WiFiNetwork{
+					ID:                 connName,
+					SSID:               propMap["802-11-wireless.ssid"],
+					AuthFailed:         authFailed,
+					LastConnectionTime: lastConnectionTime,
+				})
+			}
+
+		} else {
+			return nil, fmt.Errorf("failed to parse line: %s", line)
+		}
+	}
+
 	return networks, nil
+}
+
+func getConnectionProperties(connection string, properties []string) (map[string]string, error) {
+	out, err := exec.Command("nmcli", "-f", strings.Join(properties, ","), "-t", "connection", "show", connection).CombinedOutput()
+	if err != nil {
+		return nil, err
+	}
+	propMap := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ":")
+		if len(parts) >= 2 {
+			propMap[parts[0]] = strings.Join(parts[1:], ":")
+		}
+	}
+	return propMap, nil
 }
 
 type InputError struct {
@@ -221,12 +298,15 @@ func (e InputError) Error() string {
 	return fmt.Sprintf("Input Error: %s", e.Message)
 }
 
-var ErrNetworkAlreadyExists = InputError{Message: "a network with the given SSID already exists"}
-var ErrPSKTooShort = InputError{Message: "the given PSK is too short, must be at least 8 characters long"}
-var ErrBushnetNetwork = InputError{Message: "the given SSID is a Bushnet network so can't be modified"}
+var (
+	ErrNetworkAlreadyExists = InputError{Message: "a network with the given SSID already exists"}
+	ErrPSKTooShort          = InputError{Message: "the given PSK is too short, must be at least 8 characters long"}
+	ErrBushnetNetwork       = InputError{Message: "the given SSID is a Bushnet network so can't be modified"}
+)
 
 func checkIfBushnetNetwork(ssid string) error {
-	if ssid == "Bushnet" || ssid == "bushnet" {
+	ssid = strings.ToLower(ssid)
+	if ssid == "bushnet" || ssid == "bushnethotspot" {
 		return ErrBushnetNetwork
 	}
 	return nil
@@ -245,100 +325,94 @@ func checkIfNetworkExists(ssid string) error {
 	return nil
 }
 
-// addWifiNetwork adds a new WiFi network with the given SSID and password.
-func AddWifiNetwork(ssid, password string) error {
-	// Check that there is not already a network with the given SSID
+// Conects to an existing network
+func ConnectWifiNetwork(ssid string) error {
+	if err := checkIfBushnetNetwork(ssid); err != nil {
+		return err
+	}
+	out, err := exec.Command("nmcli", "connection", "up", ssid).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to connect to network: %v, output: %s", err, out)
+	}
+	return nil
+}
+
+func ModifyWifiNetwork(ssid, psk string) error {
+	if len(psk) < 8 {
+		return ErrPSKTooShort
+	}
+	if err := checkIfBushnetNetwork(ssid); err != nil {
+		return err
+	}
+	out, err := exec.Command(
+		"nmcli", "connection", "modify", ssid,
+		"wifi-sec.psk", psk).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to modify network: %v, output: %s", err, out)
+	}
+	return nil
+}
+
+func AddWifiNetwork(ssid, psk string) error {
 	if err := checkIfNetworkExists(ssid); err != nil {
 		return err
 	}
-
-	if len(password) < 8 {
+	if len(psk) < 8 {
 		return ErrPSKTooShort
 	}
-
 	if err := checkIfBushnetNetwork(ssid); err != nil {
 		return err
 	}
-
-	// If in one of the step the network fails then make sure that it is deleted.
-	networkAddedSuccess := false
-	defer func() {
-		if !networkAddedSuccess {
-			log.Println("network fail to be added, trying to remove it")
-			if err := checkIfNetworkExists(ssid); err == ErrNetworkAlreadyExists {
-				if err := RemoveWifiNetwork(ssid); err != nil {
-					log.Println(err)
-				}
-			} else {
-				log.Println(err)
-			}
-		}
-	}()
-
-	cmd := exec.Command("wpa_cli", "-i", "wlan0", "add_network")
-	networkID, err := cmd.Output()
-	id := strings.TrimSpace(string(networkID))
+	out, err := exec.Command(
+		"nmcli", "connection", "add",
+		"connection.type", "802-11-wireless",
+		"connection.auth-retries", "2",
+		//"connection.autoconnect-retries", "2", //TODO look into this option more.
+		"wifi-sec.key-mgmt", "wpa-psk",
+		"connection.id", ssid,
+		"ipv4.route-metric", "10", // To make wifi preferable over the USB (modem) connection
+		"ipv6.route-metric", "10",
+		"wifi.ssid", ssid,
+		"wifi-sec.psk", psk).CombinedOutput()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to add network: %v, output: %s", err, out)
 	}
-
-	if err := runWPACommand("wpa_cli", "-i", "wlan0", "set_network", id, "ssid", fmt.Sprintf("\"%s\"", ssid)); err != nil {
-		return err
-	}
-
-	if err := runWPACommand("wpa_cli", "-i", "wlan0", "set_network", id, "psk", fmt.Sprintf("\"%s\"", password)); err != nil {
-		return err
-	}
-
-	if err := runWPACommand("wpa_cli", "-i", "wlan0", "enable_network", id); err != nil {
-		return err
-	}
-
-	if err := runWPACommand("wpa_cli", "-i", "wlan0", "save", "config"); err != nil {
-		return err
-	}
-	networkAddedSuccess = true
 	return nil
 }
 
-func RemoveWifiNetwork(ssid string) error {
+func RemoveWifiNetwork(ssid string, disconnect bool, startHotspot bool) error {
 	if err := checkIfBushnetNetwork(ssid); err != nil {
 		return err
 	}
-	networks, err := ListSavedWifiNetworks()
+	out, err := exec.Command("nmcli", "connection", "delete", ssid).CombinedOutput()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to remove network: %v, output: %s", err, out)
 	}
-	id := ""
-	for _, network := range networks {
-		if network.SSID == ssid {
-			id = network.ID
+
+	if disconnect {
+		out, err = exec.Command("nmcli", "connection", "down", ssid).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed to disconnect network: %v, output: %s", err, out)
 		}
 	}
-	if id == "" {
-		log.Printf("when trying to delete network '%s' it was not found", ssid)
-		return nil
-	}
-	if err := runWPACommand("wpa_cli", "-i", "wlan0", "remove_network", id); err != nil {
-		return err
-	}
 
-	if err := runWPACommand("wpa_cli", "-i", "wlan0", "save", "config"); err != nil {
-		return err
+	if startHotspot {
+		EnableHotspot(true)
 	}
-
-	//TODO Check if connected to network and if not then switch to wifi.
-
 	return nil
 }
 
-func runWPACommand(args ...string) error {
-	out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("error running wpa command: '%s', output: %s", strings.Join(args, " "), string(out))
+func DisconnectWifiNetwork(ssid string, startHotspot bool) error {
+	if err := checkIfBushnetNetwork(ssid); err != nil {
+		return err
 	}
-	if strings.Contains(string(out), "FAIL") || strings.Contains(string(out), "exit status 255") {
-		return fmt.Errorf("error running wpa command: '%s', output: %s", strings.Join(args, " "), string(out))
+	out, err := exec.Command("nmcli", "connection", "down", ssid).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to forget network: %v, output: %s", err, out)
+	}
+
+	if startHotspot {
+		EnableHotspot(true)
 	}
 	return nil
 }
