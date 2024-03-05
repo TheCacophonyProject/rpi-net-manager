@@ -102,6 +102,26 @@ func runMain() error {
 }
 
 func startService() error {
+
+	bushnetConfig := map[string]string{
+		"connection.type":                 "802-11-wireless",
+		"connection.auth-retries":         "2",
+		"connection.autoconnect-priority": "10",
+		"ipv4.route-metric":               "10",
+		"ipv6.route-metric":               "10",
+		"wifi.ssid":                       "bushnet",
+		"wifi-sec.psk":                    "feathers",
+		"wifi-sec.key-mgmt":               "wpa-psk",
+	}
+	if err := netmanagerclient.ModifyNetworkConfig("bushnet", bushnetConfig); err != nil {
+		return err
+	}
+
+	bushnetConfig["wifi.ssid"] = "Bushnet"
+	if err := netmanagerclient.ModifyNetworkConfig("Bushnet", bushnetConfig); err != nil {
+		return err
+	}
+
 	c, done, err := makeNetworkUpdateChan()
 	if err != nil {
 		return err
