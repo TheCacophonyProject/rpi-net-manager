@@ -312,20 +312,20 @@ func checkIfBushnetNetwork(ssid string) error {
 	return nil
 }
 
-func checkIfNetworkExists(ssid string) error {
+func CheckIfNetworkExists(id string) (bool, error) {
 	networks, err := ListSavedWifiNetworks()
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, network := range networks {
-		if network.SSID == ssid {
-			return ErrNetworkAlreadyExists
+		if network.ID == id {
+			return true, nil
 		}
 	}
-	return nil
+	return false, nil
 }
 
-// Conects to an existing network
+// Connects to an existing network
 func ConnectWifiNetwork(ssid string) error {
 	if err := checkIfBushnetNetwork(ssid); err != nil {
 		return err
@@ -354,8 +354,12 @@ func ModifyWifiNetwork(ssid, psk string) error {
 }
 
 func AddWifiNetwork(ssid, psk string) error {
-	if err := checkIfNetworkExists(ssid); err != nil {
+	alreadyExists, err := CheckIfNetworkExists(ssid)
+	if err != nil {
 		return err
+	}
+	if alreadyExists {
+		return ErrNetworkAlreadyExists
 	}
 	if len(psk) < 8 {
 		return ErrPSKTooShort
@@ -363,19 +367,21 @@ func AddWifiNetwork(ssid, psk string) error {
 	if err := checkIfBushnetNetwork(ssid); err != nil {
 		return err
 	}
-	out, err := exec.Command(
-		"nmcli", "connection", "add",
-		"connection.type", "802-11-wireless",
-		"connection.auth-retries", "2",
-		//"connection.autoconnect-retries", "2", //TODO look into this option more.
-		"wifi-sec.key-mgmt", "wpa-psk",
-		"connection.id", ssid,
-		"ipv4.route-metric", "10", // To make wifi preferable over the USB (modem) connection
-		"ipv6.route-metric", "10",
-		"wifi.ssid", ssid,
-		"wifi-sec.psk", psk).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to add network: %v, output: %s", err, out)
+
+	c := map[string]string{
+		"connection.type":         "802-11-wireless",
+		"connection.auth-retries": "2",
+		"wifi-sec.key-mgmt":       "wpa-psk",
+		"connection.id":           ssid,
+		"ipv4.route-metric":       "10", // To make wifi preferable over the USB (modem) connection
+		"ipv6.route-metric":       "10",
+		"wifi.ssid":               ssid,
+		"wifi-sec.psk":            psk,
+	}
+	//"connection.autoconnect-retries", "2", //TODO look into this option more.
+
+	if err := ModifyNetworkConfig(ssid, c); err != nil {
+		return fmt.Errorf("failed to add network: %v", err)
 	}
 	return nil
 }
@@ -413,6 +419,44 @@ func DisconnectWifiNetwork(ssid string, startHotspot bool) error {
 
 	if startHotspot {
 		EnableHotspot(true)
+	}
+	return nil
+}
+
+// ModifyNetworkConfig will check if a networks exists, create it if not, then set the given config values to it.
+func ModifyNetworkConfig(id string, c map[string]string) error {
+	exists, err := CheckIfNetworkExists(id)
+	if err != nil {
+		return err
+	}
+	if exists {
+		for k, v := range c {
+			out, err := exec.Command("nmcli", "connection", "modify", id, k, v).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("failed to modify network: %v, output: %s", err, out)
+			}
+		}
+		return nil
+	}
+
+	configCommands := []string{"connection", "add", "connection.id", id}
+
+	// Add connection.type first or else nmcli could fail depending on the order.
+	val, typeExists := c["connection.type"]
+	if typeExists {
+		configCommands = append(configCommands, "connection.type", val)
+	}
+
+	for k, v := range c {
+		if k == "connection.type" {
+			continue
+		}
+		configCommands = append(configCommands, k, v)
+	}
+
+	out, err := exec.Command("nmcli", configCommands...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create network: %v, output: %s", err, out)
 	}
 	return nil
 }

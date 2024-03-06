@@ -219,35 +219,25 @@ func (nsm *networkStateMachine) setupHotspot() error {
 	}
 
 	log.Println("Setting up network for hosting a hotspot.")
-	networks, err := netmanagerclient.ListSavedWifiNetworks()
-	if err != nil {
+	hotspotConfig := map[string]string{
+		"connection.type":      "wifi",
+		"ifname":               "wlan0",
+		"autoconnect":          "no",
+		"ssid":                 "bushnet",
+		"802-11-wireless.mode": "ap",
+		"802-11-wireless.band": "bg",
+		"ipv4.method":          "manual", // Using 'manual' instead of 'shared' so can configure dnsmasq to not share the internet connection of the modem to connected devices.
+		"wifi-sec.key-mgmt":    "wpa-psk",
+		"wifi-sec.psk":         "feathers",
+		"ipv4.addresses":       router_ip + "/24",
+	}
+
+	if err := netmanagerclient.ModifyNetworkConfig(bushnetHotspot, hotspotConfig); err != nil {
 		return err
-	}
-	hotspotConfigured := false
-	for _, network := range networks {
-		if network.ID == bushnetHotspot {
-			hotspotConfigured = true
-		}
-	}
-	if !hotspotConfigured {
-		log.Printf("'%s' not found, creating.", bushnetHotspot)
-		err = runNMCli(
-			"connection", "add", "type", "wifi", "ifname", "wlan0", "con-name", bushnetHotspot,
-			"autoconnect", "no", "ssid", "bushnet",
-			"802-11-wireless.mode", "ap",
-			"802-11-wireless.band", "bg",
-			"ipv4.method", "manual", // Using 'manual' instead of 'shared' so can configure dnsmasq to not share the internet connection of the modem to connected devices.
-			"wifi-sec.key-mgmt", "wpa-psk",
-			"wifi-sec.psk", "feathers",
-			"ipv4.addresses", router_ip+"/24")
-		if err != nil {
-			return err
-		}
 	}
 
 	log.Println("Starting hotspot...")
-	err = runNMCli("connection", "up", bushnetHotspot)
-	if err != nil {
+	if err := runNMCli("connection", "up", bushnetHotspot); err != nil {
 		return err
 	}
 
@@ -261,8 +251,6 @@ func (nsm *networkStateMachine) setupHotspot() error {
 	}
 	return nil
 }
-
-// Function that will listen for dbus
 
 func detectState() (netmanagerclient.NetworkState, string, error) {
 	out, err := exec.Command("nmcli", "radio", "wifi").CombinedOutput()
