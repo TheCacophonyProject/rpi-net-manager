@@ -220,7 +220,7 @@ func (nsm *networkStateMachine) setupHotspot() error {
 
 	log.Println("Setting up network for hosting a hotspot.")
 	hotspotConfig := map[string]string{
-		"connection.type":      "wifi",
+		"connection.type":      "802-11-wireless",
 		"ifname":               "wlan0",
 		"autoconnect":          "no",
 		"ssid":                 "bushnet",
