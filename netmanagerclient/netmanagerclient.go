@@ -28,8 +28,12 @@ const (
 
 func stringToNetworkState(s string) (NetworkState, error) {
 	switch s {
+	case string(NS_INIT):
+		return NS_INIT, nil
 	case string(NS_WIFI_OFF):
 		return NS_WIFI_OFF, nil
+	case string(NS_WIFI_SETUP):
+		return NS_WIFI_SETUP, nil
 	case string(NS_WIFI_SCANNING):
 		return NS_WIFI_SCANNING, nil
 	case string(NS_WIFI_CONNECTING):
@@ -40,8 +44,10 @@ func stringToNetworkState(s string) (NetworkState, error) {
 		return NS_HOTSPOT_STARTING, nil
 	case string(NS_HOTSPOT_RUNNING):
 		return NS_HOTSPOT_RUNNING, nil
+	case string(NS_ERROR):
+		return NS_ERROR, nil
 	default:
-		return "", errors.New("invalid network state")
+		return "", fmt.Errorf("invalid network state, '%s'", s)
 	}
 }
 
