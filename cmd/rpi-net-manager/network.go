@@ -140,8 +140,10 @@ func (nsm *networkStateMachine) runStateMachine() error {
 				}
 			}
 		case netmanagerclient.NS_WIFI_CONNECTING:
+			logBssid()
 			// Nothing to do
 		case netmanagerclient.NS_WIFI_CONNECTED:
+			logBssid()
 			// Nothing to do
 		case netmanagerclient.NS_HOTSPOT_STARTING:
 			// Nothing to do
@@ -177,6 +179,22 @@ func (nsm *networkStateMachine) runStateMachine() error {
 		}
 		nsm.mux.Lock()
 	}
+}
+
+func logBssid() {
+	bssidOutRaw, err := exec.Command("nmcli", "--terse", "-fields", "AP.BSSID", "device", "show", "wlan0").CombinedOutput()
+	if err != nil {
+		log.Printf("failed to run nmcli: %v, output: %s", err, bssidOutRaw)
+		return
+	}
+	bssid := string(bssidOutRaw)
+	parts := strings.Split(bssid, ":")
+	if len(parts) < 2 {
+		log.Printf("Failed to get bssid from output: '%s'", string(bssidOutRaw))
+		return
+	}
+	bssid = strings.Join(parts[1:], ":")
+	log.Println("bssid:", bssid)
 }
 
 func (nsm *networkStateMachine) keepHotspotOnFor(keepOnFor time.Duration) {
