@@ -3,14 +3,16 @@ package netmanagerclient
 import (
 	"errors"
 	"fmt"
-	"log"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/TheCacophonyProject/go-utils/logging"
 	"github.com/godbus/dbus/v5"
 )
+
+var log = logging.NewLogger("info")
 
 type NetworkState string
 
