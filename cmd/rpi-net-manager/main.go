@@ -2,16 +2,17 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"time"
 
+	"github.com/TheCacophonyProject/go-utils/logging"
 	netmanagerclient "github.com/TheCacophonyProject/rpi-net-manager/netmanagerclient"
 	"github.com/alexflint/go-arg"
 	"github.com/godbus/dbus/v5"
 )
 
 var version = "<not set>"
+var log = logging.NewLogger("info")
 
 type AddNetwork struct {
 	SSID string `arg:"required" help:"the SSID of the network"`
@@ -43,6 +44,7 @@ type Args struct {
 	ShowConnectedDevices *subcommand    `arg:"subcommand:show-connected-devices" help:"show connected devices on the hotspot //TODO"`
 	ModemStatus          *subcommand    `arg:"subcommand:modem-status" help:"show modem status //TODO"`
 	CheckState           *subcommand    `arg:"subcommand:check-state" help:"check if the state needs to be updated"`
+	logging.LogArgs
 }
 
 func (Args) Version() string {
@@ -65,7 +67,8 @@ func main() {
 
 func runMain() error {
 	args := procArgs()
-	log.SetFlags(0)
+
+	log = logging.NewLogger(args.LogLevel)
 
 	log.Printf("Running version: %s", version)
 	if os.Geteuid() != 0 {
