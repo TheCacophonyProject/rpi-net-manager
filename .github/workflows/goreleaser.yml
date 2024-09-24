@@ -12,4 +12,4 @@ on:
 
 jobs:
   build:
-    uses: TheCacophonyProject/github-actions-templates/.github/workflows/go-ci-release.yml@v0.1.0
+    uses: TheCacophonyProject/github-actions-templates/.github/workflows/go-ci-release.yml@v0.1.1
