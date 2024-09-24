@@ -254,12 +254,9 @@ func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
 				}
 
 				sec, err := strconv.ParseInt(propMap["connection.timestamp"], 10, 64)
-				lastConnectionTime := time.Time{}
 				if err != nil {
 					log.Printf("Failed to part time '%s'", err)
 					return nil, err
-				} else {
-					lastConnectionTime = time.Unix(sec, 0)
 				}
 				// if auth-retries is 1, last time the connection failed.
 				authFailed := propMap["connection.auth-retries"] == "1"
@@ -268,7 +265,7 @@ func ListSavedWifiNetworks() ([]WiFiNetwork, error) {
 					ID:                 connName,
 					SSID:               propMap["802-11-wireless.ssid"],
 					AuthFailed:         authFailed,
-					LastConnectionTime: lastConnectionTime,
+					LastConnectionTime: time.Unix(sec, 0),
 				})
 			}
 

@@ -1,5 +1,7 @@
 project_name: rpi-net-manager
 
+version: 2
+
 release:
   github:
     owner: TheCacophonyProject
