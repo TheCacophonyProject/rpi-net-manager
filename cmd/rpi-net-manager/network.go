@@ -282,7 +282,7 @@ func (nsm *networkStateMachine) setupHotspot() error {
 		return err
 	}
 
-	if err := createDNSConfig(router_ip, "192.168.4.2,192.168.4.20"); err != nil {
+	if err := createDNSConfig("192.168.4.2,192.168.4.20"); err != nil {
 		return err
 	}
 
@@ -350,7 +350,7 @@ func detectState() (netmanagerclient.NetworkState, string, error) {
 
 const router_ip = "192.168.4.1"
 
-func createDNSConfig(router_ip string, ip_range string) error {
+func createDNSConfig(ip_range string) error {
 	file_name := "/etc/dnsmasq.conf"
 	config_lines := []string{
 		"interface=wlan0",
