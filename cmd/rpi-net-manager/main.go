@@ -60,7 +60,7 @@ func procArgs() Args {
 func main() {
 	err := runMain()
 	if err != nil {
-		fmt.Println(err)
+		log.Error(err)
 		os.Exit(1)
 	}
 }
@@ -243,7 +243,7 @@ func makeNetworkUpdateChan() (chan struct{}, chan<- struct{}, error) {
 	c := make(chan *dbus.Signal, 10)
 	conn.Signal(c)
 
-	fmt.Println("Listening for network changes...")
+	log.Println("Listening for network changes...")
 
 	go func() {
 		defer close(stateChan)

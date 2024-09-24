@@ -33,6 +33,7 @@ func (nsm *networkStateMachine) handleStateTransition(newState netmanagerclient.
 	}
 	nsm.setState(newState)
 	log.Printf("State transition: %s -> %s, Active Connection: '%s'", oldState, newState, newConName)
+	logBssid()
 
 	// If going from CONNECTING to SCANNING then the connection probably failed.
 	if oldState == netmanagerclient.NS_WIFI_CONNECTING && newState == netmanagerclient.NS_WIFI_SCANNING {
@@ -139,10 +140,8 @@ func (nsm *networkStateMachine) runStateMachine() error {
 				}
 			}
 		case netmanagerclient.NS_WIFI_CONNECTING:
-			logBssid()
 			// Nothing to do
 		case netmanagerclient.NS_WIFI_CONNECTED:
-			logBssid()
 			// Nothing to do
 		case netmanagerclient.NS_HOTSPOT_STARTING:
 			// Nothing to do
@@ -180,20 +179,45 @@ func (nsm *networkStateMachine) runStateMachine() error {
 	}
 }
 
+func getActiveBSSIDFromOutput(output string) (string, error) {
+	lines := strings.Split(output, "\n")
+	inUseAPID := ""
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, ".IN-USE:*") {
+			inUseAPID = strings.Split(line, ".")[0]
+			break
+		}
+	}
+
+	if inUseAPID == "" {
+		return "", fmt.Errorf("no active AP found")
+	}
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, inUseAPID+".BSSID:") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				return parts[1], nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no BSSID found")
+}
+
 func logBssid() {
-	bssidOutRaw, err := exec.Command("nmcli", "--terse", "-fields", "AP.BSSID", "device", "show", "wlan0").CombinedOutput()
+	bssidOutRaw, err := exec.Command("nmcli", "--terse", "--fields", "AP.BSSID,AP.IN-USE", "device", "show", "wlan0").CombinedOutput()
 	if err != nil {
 		log.Printf("failed to run nmcli: %v, output: %s", err, bssidOutRaw)
 		return
 	}
-	bssid := string(bssidOutRaw)
-	parts := strings.Split(bssid, ":")
-	if len(parts) < 2 {
-		log.Printf("Failed to get bssid from output: '%s'", string(bssidOutRaw))
+	bssid, err := getActiveBSSIDFromOutput(string(bssidOutRaw))
+	if err != nil {
+		log.Printf("failed to get active bssid: %v, output: %s", err, bssidOutRaw)
 		return
 	}
-	bssid = strings.Join(parts[1:], ":")
-	log.Println("bssid:", bssid)
+	log.Info("Active BSSID:", bssid)
 }
 
 func (nsm *networkStateMachine) keepHotspotOnFor(keepOnFor time.Duration) {
