@@ -38,6 +38,9 @@ func startDBusService(nsm *networkStateMachine) error {
 	if err := conn.Export(genIntrospectable(s), netmanagerclient.DbusPath, "org.freedesktop.DBus.Introspectable"); err != nil {
 		return err
 	}
+	if err := conn.Export(peer{}, netmanagerclient.DbusPath, "org.freedesktop.DBus.Peer"); err != nil {
+		return err
+	}
 	log.Println("Started RPiNetManager service")
 	return nil
 }
@@ -127,4 +130,10 @@ func getCallerName() string {
 	}
 	funcNames := strings.Split(caller.Name(), ".")
 	return funcNames[len(funcNames)-1]
+}
+
+type peer struct{}
+
+func (p peer) Ping() *dbus.Error {
+	return nil
 }

@@ -92,6 +92,20 @@ func CheckState() error {
 	return err
 }
 
+func CheckIfDBusAvailable() bool {
+	conn, err := dbus.SystemBus()
+	if err != nil {
+		return false
+	}
+	obj := conn.Object(DbusInterface, DbusPath)
+	err = obj.Call("org.freedesktop.DBus.Peer.Ping", 0).Err
+	if err == nil {
+		return true
+	} else {
+		return false
+	}
+}
+
 // EnableHotspot will enable the hotspot.
 // If the hotspot is already enabled it will return unless force is true,
 // then it will start up the hotspot again.
