@@ -10,6 +10,7 @@ import (
 	"time"
 
 	netmanagerclient "github.com/TheCacophonyProject/rpi-net-manager/netmanagerclient"
+	"github.com/godbus/dbus/v5"
 )
 
 type networkStateMachine struct {
@@ -132,8 +133,18 @@ func (nsm *networkStateMachine) runStateMachine() error {
 			if wifiScanTimeout {
 				wifiScanTimeout = false
 				if nsm.hotspotFallback {
+					// Checking if the hotspot should turn on.
+					minutes, err := getMinutesSinceHumanInteraction()
+					log.Info("Minutes since human interaction:", minutes)
+					if err != nil {
+						return fmt.Errorf("failed to get minutes since human interaction: %v", err)
+					}
+					if minutes > 60 {
+						log.Info("Not falling back to hosting hotspot as there has not been a user interaction in 60 minutes")
+						break
+					}
 					nsm.hotspotFallback = false
-					log.Println("Enable hotspot")
+					log.Info("Enable hotspot")
 					if err := nsm.setupHotspot(); err != nil {
 						return err
 					}
@@ -149,10 +160,10 @@ func (nsm *networkStateMachine) runStateMachine() error {
 			if hotspotTimeout {
 				hotspotTimeout = false
 				log.Println("Hotspot timeout, powering off hotspot")
-				nsm.setupWifi() // Enabling wifi will disable the hotspot.
+				nsm.setupWifi() // Enabling wifi will disable the hotspot, then it will scan the network once again then.
 			}
 		default:
-			log.Println("Unhandled network state:", nsm.state)
+			log.Error("Unhandled network state:", nsm.state)
 		}
 
 		nsm.mux.Unlock()
@@ -404,4 +415,24 @@ func (nsm *networkStateMachine) setupWifi() error {
 		return err
 	}
 	return nil
+}
+
+func getMinutesSinceHumanInteraction() (uint8, error) {
+	dbusName := "org.cacophony.ATtiny"
+	dbusPath := "/org/cacophony/ATtiny"
+
+	conn, err := dbus.SystemBus()
+	if err != nil {
+		return 0, err
+	}
+	obj := conn.Object(dbusName, dbus.ObjectPath(dbusPath))
+	var minutes uint8
+	call := obj.Call(dbusName+".MinutesSinceHumanInteraction", 0)
+	if call.Err == nil {
+		if err := call.Store(&minutes); err != nil {
+			return 0, err
+		}
+		return minutes, nil
+	}
+	return 0, call.Err
 }
