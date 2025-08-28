@@ -1,6 +1,6 @@
 module github.com/TheCacophonyProject/rpi-net-manager
 
-go 1.22.3
+go 1.25.0
 
 require (
 	github.com/TheCacophonyProject/go-utils v0.1.1
