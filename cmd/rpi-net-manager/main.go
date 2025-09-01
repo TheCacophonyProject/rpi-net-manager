@@ -11,8 +11,10 @@ import (
 	"github.com/godbus/dbus/v5"
 )
 
-var version = "<not set>"
-var log = logging.NewLogger("info")
+var (
+	version = "<not set>"
+	log     = logging.NewLogger("info")
+)
 
 type AddNetwork struct {
 	SSID string `arg:"required" help:"the SSID of the network"`
@@ -105,7 +107,6 @@ func runMain() error {
 }
 
 func startService() error {
-
 	bushnetConfig := map[string]string{
 		"connection.type":                 "802-11-wireless",
 		"connection.auth-retries":         "2",
@@ -115,6 +116,7 @@ func startService() error {
 		"wifi.ssid":                       "bushnet",
 		"wifi-sec.psk":                    "feathers",
 		"wifi-sec.key-mgmt":               "wpa-psk",
+		"802-11-wireless-security.pmf":    "1", // Android has issues with PMF
 	}
 	if err := netmanagerclient.ModifyNetworkConfig("bushnet", bushnetConfig); err != nil {
 		return err

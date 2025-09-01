@@ -272,16 +272,17 @@ func (nsm *networkStateMachine) setupHotspot() error {
 
 	log.Println("Setting up network for hosting a hotspot.")
 	hotspotConfig := map[string]string{
-		"connection.type":      "802-11-wireless",
-		"ifname":               "wlan0",
-		"autoconnect":          "no",
-		"ssid":                 "bushnet",
-		"802-11-wireless.mode": "ap",
-		"802-11-wireless.band": "bg",
-		"ipv4.method":          "manual", // Using 'manual' instead of 'shared' so can configure dnsmasq to not share the internet connection of the modem to connected devices.
-		"wifi-sec.key-mgmt":    "wpa-psk",
-		"wifi-sec.psk":         "feathers",
-		"ipv4.addresses":       router_ip + "/24",
+		"connection.type":              "802-11-wireless",
+		"ifname":                       "wlan0",
+		"autoconnect":                  "no",
+		"ssid":                         "bushnet",
+		"802-11-wireless.mode":         "ap",
+		"802-11-wireless.band":         "bg",
+		"ipv4.method":                  "manual", // Using 'manual' instead of 'shared' so can configure dnsmasq to not share the internet connection of the modem to connected devices.
+		"wifi-sec.key-mgmt":            "wpa-psk",
+		"wifi-sec.psk":                 "feathers",
+		"ipv4.addresses":               router_ip + "/24",
+		"802-11-wireless-security.pmf": "disable", // Android has issues with PMF
 	}
 
 	if err := netmanagerclient.ModifyNetworkConfig(bushnetHotspot, hotspotConfig); err != nil {
