@@ -87,6 +87,15 @@ func (s service) EnableHotspot(force bool) *dbus.Error {
 	return nil
 }
 
+func (s service) ConnectWifi(ssid string) *dbus.Error {
+	s.nsm.mux.Lock()
+	defer s.nsm.mux.Unlock()
+	if err := s.nsm.connectWifiNetwork(ssid); err != nil {
+		return dbusErr(err)
+	}
+	return nil
+}
+
 func (s service) KeepHotspotOnFor(seconds int) *dbus.Error {
 	s.nsm.mux.Lock()
 	defer s.nsm.mux.Unlock()
@@ -94,6 +103,31 @@ func (s service) KeepHotspotOnFor(seconds int) *dbus.Error {
 		return dbusErr(errors.New("hotspot is not enabled"))
 	}
 	s.nsm.keepHotspotOnFor(time.Duration(seconds) * time.Second)
+	return nil
+}
+
+func (s service) GetHotspotInterfaces() ([]string, *dbus.Error) {
+	s.nsm.mux.Lock()
+	defer s.nsm.mux.Unlock()
+	ifaces, err := s.nsm.availableHotspotInterfaces()
+	if err != nil {
+		return nil, dbusErr(err)
+	}
+	return ifaces, nil
+}
+
+func (s service) GetHotspotInterface() (string, *dbus.Error) {
+	s.nsm.mux.Lock()
+	defer s.nsm.mux.Unlock()
+	return s.nsm.hotspotPreferredInterface, nil
+}
+
+func (s service) SetHotspotInterface(iface string) *dbus.Error {
+	s.nsm.mux.Lock()
+	defer s.nsm.mux.Unlock()
+	if err := s.nsm.setHotspotInterfacePreference(iface); err != nil {
+		return dbusErr(err)
+	}
 	return nil
 }
 
