@@ -261,7 +261,6 @@ func (nsm *networkStateMachine) handleStateTransition(newState netmanagerclient.
 		}
 		nsm.ensurePreferredClientInterface(newConName)
 		nsm.hotspotFallback = true
-		nsm.scanFailureCount = 0
 	}
 	return nil
 }
@@ -312,6 +311,10 @@ func (nsm *networkStateMachine) runStateMachine() error {
 			return err
 		}
 
+		if nsm.state != netmanagerclient.NS_WIFI_SCANNING {
+			nsm.scanFailureCount = 0
+		}
+
 		// Update the state
 		switch nsm.state {
 		case netmanagerclient.NS_WIFI_SCANNING:
@@ -349,19 +352,14 @@ func (nsm *networkStateMachine) runStateMachine() error {
 				}
 			}
 		case netmanagerclient.NS_WIFI_OFF:
-			nsm.scanFailureCount = 0
 			// Turn wifi back on if button is pressed, this will get handled elsewhere.
 		case netmanagerclient.NS_WIFI_CONNECTING:
-			nsm.scanFailureCount = 0
 			// Nothing to do
 		case netmanagerclient.NS_WIFI_CONNECTED:
-			nsm.scanFailureCount = 0
 			// Nothing to do
 		case netmanagerclient.NS_HOTSPOT_STARTING:
-			nsm.scanFailureCount = 0
 			// Nothing to do
 		case netmanagerclient.NS_HOTSPOT_RUNNING:
-			nsm.scanFailureCount = 0
 			if hotspotTimeout {
 				hotspotTimeout = false
 				log.Println("Hotspot timeout, powering off hotspot")
@@ -609,7 +607,6 @@ func (nsm *networkStateMachine) setupHotspot() error {
 
 	if useHostapd {
 		if hostapdErr := nsm.startHostapdHotspot(iface, band, channel, supportsVHT); hostapdErr == nil {
-			nsm.scanFailureCount = 0
 			return nil
 		} else {
 			log.Printf("hostapd hotspot start failed on %s: %v", iface, hostapdErr)
@@ -618,7 +615,6 @@ func (nsm *networkStateMachine) setupHotspot() error {
 			log.Printf("Falling back to 2.4GHz hostapd on %s", iface)
 			downgradeErr := nsm.startHostapdHotspot(iface, "bg", 1, false)
 			if downgradeErr == nil {
-				nsm.scanFailureCount = 0
 				return nil
 			}
 			log.Printf("hostapd 2.4GHz fallback failed: %v", downgradeErr)
@@ -1347,7 +1343,6 @@ func (nsm *networkStateMachine) connectWifiNetwork(ssid string) error {
 	target := preferredClientInterface()
 	nsm.ensurePreferredClientInterface(ssid)
 	nsm.hotspotFallback = true
-	nsm.scanFailureCount = 0
 
 	args := []string{"connection", "up", ssid}
 	if target != "" && interfaceExists(target) {

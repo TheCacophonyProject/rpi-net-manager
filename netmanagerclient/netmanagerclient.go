@@ -419,7 +419,7 @@ func ConnectWifiNetwork(ssid string) error {
 	}
 	if _, err := eventsDbusCall("ConnectWifi", ssid); err == nil {
 		return nil
-	} else if err != nil {
+	} else {
 		var dbusErr *dbus.Error
 		if errors.As(err, &dbusErr) {
 			switch dbusErr.Name {
