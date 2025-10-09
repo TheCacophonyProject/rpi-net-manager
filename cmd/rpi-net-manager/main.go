@@ -140,6 +140,15 @@ func startService() error {
 		wifiScanTimer:        time.NewTimer(10 * time.Second),
 		hotspotTimer:         time.NewTimer(5 * time.Minute),
 		hotspotFallback:      true,
+		hotspotInterface:     "",
+	}
+	if pref, err := loadHotspotInterfacePreference(); err != nil {
+		log.Printf("failed to load hotspot interface preference: %v", err)
+	} else {
+		nsm.hotspotPreferredInterface = pref
+		if pref != "" {
+			log.Printf("Loaded hotspot interface preference: %s", pref)
+		}
 	}
 
 	if err := startDBusService(nsm); err != nil {

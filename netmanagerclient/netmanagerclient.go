@@ -114,6 +114,74 @@ func EnableHotspot(force bool) error {
 	return err
 }
 
+var ErrHotspotInterfaceUnsupported = errors.New("hotspot interface selection unsupported")
+
+func mapHotspotInterfaceErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	var dbusErr *dbus.Error
+	if errors.As(err, &dbusErr) {
+		if dbusErr.Name == "org.freedesktop.DBus.Error.UnknownMethod" {
+			return ErrHotspotInterfaceUnsupported
+		}
+		lowerName := strings.ToLower(dbusErr.Name)
+		if strings.Contains(lowerName, "unknown") {
+			return ErrHotspotInterfaceUnsupported
+		}
+		if strings.Contains(lowerName, "invalidmethod") || strings.Contains(lowerName, "invalid_method") {
+			return ErrHotspotInterfaceUnsupported
+		}
+	}
+	return err
+}
+
+func GetHotspotInterfaces() ([]string, error) {
+	data, err := eventsDbusCall("GetHotspotInterfaces")
+	if err != nil {
+		return nil, mapHotspotInterfaceErr(err)
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	ifaces := []string{}
+	switch v := data[0].(type) {
+	case []string:
+		ifaces = append(ifaces, v...)
+	case []interface{}:
+		for _, item := range v {
+			str, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("unexpected type %T in hotspot interface list", item)
+			}
+			ifaces = append(ifaces, str)
+		}
+	default:
+		return nil, fmt.Errorf("unexpected payload type %T for hotspot interface list", data[0])
+	}
+	return ifaces, nil
+}
+
+func GetHotspotInterface() (string, error) {
+	data, err := eventsDbusCall("GetHotspotInterface")
+	if err != nil {
+		return "", mapHotspotInterfaceErr(err)
+	}
+	if len(data) == 0 {
+		return "", nil
+	}
+	iface, ok := data[0].(string)
+	if !ok {
+		return "", fmt.Errorf("unexpected payload type %T for hotspot interface", data[0])
+	}
+	return iface, nil
+}
+
+func SetHotspotInterface(iface string) error {
+	_, err := eventsDbusCall("SetHotspotInterface", iface)
+	return mapHotspotInterfaceErr(err)
+}
+
 func eventsDbusCall(method string, params ...interface{}) ([]interface{}, error) {
 	conn, err := dbus.SystemBus()
 	if err != nil {
@@ -348,6 +416,21 @@ func CheckIfNetworkExists(id string) (bool, error) {
 func ConnectWifiNetwork(ssid string) error {
 	if err := checkIfBushnetNetwork(ssid); err != nil {
 		return err
+	}
+	if _, err := eventsDbusCall("ConnectWifi", ssid); err == nil {
+		return nil
+	} else {
+		var dbusErr *dbus.Error
+		if errors.As(err, &dbusErr) {
+			switch dbusErr.Name {
+			case "org.freedesktop.DBus.Error.ServiceUnknown", "org.freedesktop.DBus.Error.UnknownMethod":
+				log.Printf("ConnectWifi DBus method unavailable (%s); falling back to nmcli", dbusErr.Name)
+			default:
+				return fmt.Errorf("failed to connect via service: %w", dbusErr)
+			}
+		} else {
+			return fmt.Errorf("failed to connect via service: %w", err)
+		}
 	}
 	out, err := exec.Command("nmcli", "connection", "up", ssid).CombinedOutput()
 	if err != nil {
