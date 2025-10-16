@@ -373,7 +373,7 @@ func (nsm *networkStateMachine) runStateMachine() error {
 
 	for {
 		// Look at the network setup to determine what network state the device is in.
-		newState, conName, err := detectState()
+		newState, conName, err := nsm.detectState()
 		if err != nil {
 			return err
 		}
@@ -763,13 +763,16 @@ func (nsm *networkStateMachine) setupHotspot() error {
 	return nil
 }
 
-func detectState() (netmanagerclient.NetworkState, string, error) {
+func (nsm *networkStateMachine) detectState() (netmanagerclient.NetworkState, string, error) {
 	out, err := exec.Command("nmcli", "radio", "wifi").CombinedOutput()
 	if err != nil {
 		return netmanagerclient.NS_ERROR, "", fmt.Errorf("error getting wifi radio state %s, err: %s", out, err)
 	}
 	radioState := strings.TrimSpace(string(out))
 	if radioState == "disabled" {
+		if nsm != nil && nsm.hostapdActive {
+			return netmanagerclient.NS_HOTSPOT_RUNNING, bushnetHotspot, nil
+		}
 		return netmanagerclient.NS_WIFI_OFF, "", nil
 	} else if radioState != "enabled" {
 		return netmanagerclient.NS_ERROR, "", fmt.Errorf("unknown radio state '%s'", radioState)
@@ -794,6 +797,9 @@ func detectState() (netmanagerclient.NetworkState, string, error) {
 
 	// No active network found, wifi is just scanning
 	if wifiConnectionName == "" {
+		if nsm != nil && nsm.hostapdActive {
+			return netmanagerclient.NS_HOTSPOT_RUNNING, bushnetHotspot, nil
+		}
 		return netmanagerclient.NS_WIFI_SCANNING, "", nil
 	}
 	// Active network is the bushnet hotspot

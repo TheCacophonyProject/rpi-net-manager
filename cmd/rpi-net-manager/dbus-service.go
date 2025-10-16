@@ -132,7 +132,9 @@ func (s service) SetHotspotInterface(iface string) *dbus.Error {
 }
 
 func (s service) CheckState() *dbus.Error {
-	_, _, _ = detectState()
+	s.nsm.mux.Lock()
+	defer s.nsm.mux.Unlock()
+	_, _, _ = s.nsm.detectState()
 	return nil
 }
 
