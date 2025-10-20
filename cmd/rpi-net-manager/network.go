@@ -63,46 +63,26 @@ func saveHotspotInterfacePreference(iface string) error {
 }
 
 func (nsm *networkStateMachine) hotspotIfname() string {
-	active := ""
-	switch nsm.state {
-	case netmanagerclient.NS_WIFI_CONNECTING, netmanagerclient.NS_WIFI_CONNECTED:
-		active = nsm.currentWifiDevice()
-	default:
-		// ignore cached interface when client is idle so hotspot can reuse wlan1
-		active = ""
-	}
-
 	if override := strings.TrimSpace(nsm.hotspotPreferredInterface); override != "" {
 		if !interfaceExists(override) {
 			if nsm.hotspotInterface == override {
 				nsm.hotspotInterface = ""
 			}
 			log.Printf("Configured hotspot interface %s is unavailable; falling back to automatic selection", override)
-		} else if active == override && (nsm.state == netmanagerclient.NS_WIFI_CONNECTED || nsm.state == netmanagerclient.NS_WIFI_CONNECTING) {
-			log.Printf("Configured hotspot interface %s currently used by client connection; deferring to automatic selection", override)
 		} else {
 			if override != nsm.hotspotInterface {
-				log.Printf("Hotspot interface override set to %s (client active: %s)", override, active)
+				log.Printf("Hotspot interface override set to %s", override)
 			}
 			nsm.hotspotInterface = override
 			return nsm.hotspotInterface
 		}
 	}
 
-	if iface := selectHotspotInterface(active); iface != "" {
-		if iface != nsm.hotspotInterface {
-			log.Printf("Hotspot interface updated from %s to %s (client active: %s)", nsm.hotspotInterface, iface, active)
+	if primary := primaryWifiInterface(); primary != "" {
+		if primary != nsm.hotspotInterface {
+			log.Printf("Hotspot interface updated from %s to %s", nsm.hotspotInterface, primary)
 		}
-		nsm.hotspotInterface = iface
-		return nsm.hotspotInterface
-	}
-
-	if nsm.hotspotInterface != "" && interfaceExists(nsm.hotspotInterface) {
-		return nsm.hotspotInterface
-	}
-
-	if active != "" && interfaceExists(active) {
-		nsm.hotspotInterface = active
+		nsm.hotspotInterface = primary
 		return nsm.hotspotInterface
 	}
 
@@ -117,18 +97,12 @@ func (nsm *networkStateMachine) availableHotspotInterfaces() ([]string, error) {
 	}
 	ordered := []string{}
 	seen := map[string]struct{}{}
-	preferredOrder := []string{"wlan1", "wlan0"}
-	for _, candidate := range preferredOrder {
-		for _, iface := range ifaces {
-			if iface == candidate {
-				if _, ok := seen[iface]; ok {
-					continue
-				}
-				seen[iface] = struct{}{}
-				ordered = append(ordered, iface)
-			}
-		}
+
+	if primary := primaryWifiInterface(); primary != "" && interfaceExists(primary) {
+		seen[primary] = struct{}{}
+		ordered = append(ordered, primary)
 	}
+
 	for _, iface := range ifaces {
 		if _, ok := seen[iface]; ok {
 			continue
@@ -218,6 +192,37 @@ func (nsm *networkStateMachine) ensureWifiDevicesManaged() {
 	}
 }
 
+func clearConnectionProperty(identifier, property string) (string, bool, error) {
+	out, err := exec.Command("nmcli", "--get-values", property, "connection", "show", identifier).CombinedOutput()
+	if err != nil {
+		return "", false, fmt.Errorf("nmcli get %s for %s: %w, output: %s", property, identifier, err, out)
+	}
+
+	value := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		if i := strings.Index(line, ":"); i >= 0 {
+			line = strings.TrimSpace(line[i+1:])
+		}
+		line = strings.TrimSpace(line)
+		if line == "" || line == "--" {
+			continue
+		}
+		value = line
+		break
+	}
+	if value == "" {
+		return "", false, nil
+	}
+
+	if err := runNMCli("connection", "modify", identifier, property, ""); err != nil {
+		return "", false, err
+	}
+	return value, true, nil
+}
+
 // Unpin all Wi-Fi profiles so NM can move them between wlan1/wlan0.
 // Uses UUID to avoid name/colon/space edge cases.
 func (nsm *networkStateMachine) clearPinsForAllWifiProfiles() {
@@ -239,28 +244,20 @@ func (nsm *networkStateMachine) clearPinsForAllWifiProfiles() {
 		if typ != "802-11-wireless" {
 			continue
 		}
-		// Query the property for this one connection
-		propOut, err := exec.Command("nmcli", "-g", "connection.interface-name", "connection", "show", uuid).CombinedOutput()
-		if err != nil {
-			// Fallback parser for older nmcli that may not support -g cleanly.
-			propOut2, err2 := exec.Command("nmcli", "-t", "-f", "connection.interface-name", "connection", "show", uuid).CombinedOutput()
-			if err2 != nil {
-				log.Printf("clearPinsForAllWifiProfiles: read interface-name failed for %s (%s): %v, %v", name, uuid, err, err2)
-				continue
-			}
-			propOut = propOut2
+		if prev, cleared, err := clearConnectionProperty(uuid, "connection.interface-name"); err != nil {
+			log.Printf("clearPinsForAllWifiProfiles: failed to clear interface-name for %s (%s): %v", name, uuid, err)
+		} else if cleared {
+			log.Printf("Cleared interface pin for %s (was '%s')", name, prev)
 		}
-		pin := strings.TrimSpace(string(propOut))
-		// Some nmcli versions return like "connection.interface-name:<val>"
-		if i := strings.Index(pin, ":"); i >= 0 {
-			pin = strings.TrimSpace(pin[i+1:])
+		if prev, cleared, err := clearConnectionProperty(uuid, "802-11-wireless.mac-address"); err != nil {
+			log.Printf("clearPinsForAllWifiProfiles: failed to clear mac-address for %s (%s): %v", name, uuid, err)
+		} else if cleared {
+			log.Printf("Cleared mac-address pin for %s (was '%s')", name, prev)
 		}
-		if pin != "" {
-			if err := runNMCli("connection", "modify", uuid, "connection.interface-name", ""); err != nil {
-				log.Printf("clearPinsForAllWifiProfiles: failed to clear pin for %s (%s): %v", name, uuid, err)
-				continue
-			}
-			log.Printf("Cleared interface pin for %s (was '%s')", name, pin)
+		if prev, cleared, err := clearConnectionProperty(uuid, "802-11-wireless.cloned-mac-address"); err != nil {
+			log.Printf("clearPinsForAllWifiProfiles: failed to clear cloned-mac-address for %s (%s): %v", name, uuid, err)
+		} else if cleared {
+			log.Printf("Cleared cloned-mac-address pin for %s (was '%s')", name, prev)
 		}
 	}
 }
@@ -554,11 +551,20 @@ func (nsm *networkStateMachine) ensurePreferredClientInterface(connection string
 	}
 
 	// Make sure this profile is not pinned to a specific iface.
-	if configured, err := getConnectionInterfaceName(connection); err == nil && strings.TrimSpace(configured) != "" {
-		_ = runNMCli("connection", "modify", connection, "connection.interface-name", "")
-		log.Printf("Cleared interface pin for %s (was '%s')", connection, configured)
-	} else if err != nil {
-		log.Printf("failed to read configured interface for %s: %v", connection, err)
+	if prev, cleared, err := clearConnectionProperty(connection, "connection.interface-name"); err != nil {
+		log.Printf("failed to clear interface-name binding for %s: %v", connection, err)
+	} else if cleared {
+		log.Printf("Cleared interface pin for %s (was '%s')", connection, prev)
+	}
+	if prev, cleared, err := clearConnectionProperty(connection, "802-11-wireless.mac-address"); err != nil {
+		log.Printf("failed to clear mac-address binding for %s: %v", connection, err)
+	} else if cleared {
+		log.Printf("Cleared mac-address pin for %s (was '%s')", connection, prev)
+	}
+	if prev, cleared, err := clearConnectionProperty(connection, "802-11-wireless.cloned-mac-address"); err != nil {
+		log.Printf("failed to clear cloned-mac-address binding for %s: %v", connection, err)
+	} else if cleared {
+		log.Printf("Cleared cloned-mac-address pin for %s (was '%s')", connection, prev)
 	}
 
 	nsm.lastWifiInterface = target
@@ -596,22 +602,6 @@ func getConnectionDevice(connection string) (string, error) {
 	}
 	if strings.Contains(line, ",") {
 		return strings.TrimSpace(strings.Split(line, ",")[0]), nil
-	}
-	return strings.TrimSpace(line), nil
-}
-
-func getConnectionInterfaceName(connection string) (string, error) {
-	out, err := exec.Command("nmcli", "-t", "-f", "connection.interface-name", "connection", "show", connection).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("nmcli error: %w, output: %s", err, out)
-	}
-	line := strings.TrimSpace(string(out))
-	if line == "" || strings.HasSuffix(line, ":--") {
-		return "", nil
-	}
-	parts := strings.SplitN(line, ":", 2)
-	if len(parts) == 2 {
-		return strings.TrimSpace(parts[1]), nil
 	}
 	return strings.TrimSpace(line), nil
 }
@@ -1169,27 +1159,6 @@ func wifiInterfaces() ([]string, error) {
 	return interfaces, nil
 }
 
-func selectHotspotInterface(active string) string {
-	candidates := []string{"wlan1", "wlan0"}
-	for _, candidate := range candidates {
-		if candidate == active {
-			continue
-		}
-		if !interfaceExists(candidate) {
-			log.Printf("Hotspot candidate %s unavailable", candidate)
-			continue
-		}
-		log.Printf("Hotspot selecting dedicated interface %s (client active: %s)", candidate, active)
-		return candidate
-	}
-	if interfaceExists(active) {
-		log.Printf("No dedicated hotspot interface available; falling back to active client %s", active)
-		return active
-	}
-	log.Printf("No wireless interfaces available for hotspot (client active: %s)", active)
-	return ""
-}
-
 func interfaceExists(name string) bool {
 	if name == "" {
 		return false
@@ -1198,8 +1167,7 @@ func interfaceExists(name string) bool {
 	return err == nil
 }
 
-// If wifi dongle (wlan1) is present, prefer that for client connections.
-func preferredClientInterface() string {
+func primaryWifiInterface() string {
 	if interfaceExists("wlan1") {
 		return "wlan1"
 	}
@@ -1207,6 +1175,11 @@ func preferredClientInterface() string {
 		return "wlan0"
 	}
 	return ""
+}
+
+// If wifi dongle (wlan1) is present, prefer that for client connections.
+func preferredClientInterface() string {
+	return primaryWifiInterface()
 }
 
 func selectHotspotRadioConfig(iface string) (string, int, bool) {
@@ -1415,7 +1388,21 @@ func (nsm *networkStateMachine) connectWifiNetwork(ssid string) error {
 	}
 
 	// Ensure this profile is not pinned; we'll steer ephemerally.
-	_ = runNMCli("connection", "modify", ssid, "connection.interface-name", "")
+	if prev, cleared, err := clearConnectionProperty(ssid, "connection.interface-name"); err != nil {
+		log.Printf("failed to clear interface-name binding for %s: %v", ssid, err)
+	} else if cleared {
+		log.Printf("Cleared interface pin for %s (was '%s')", ssid, prev)
+	}
+	if prev, cleared, err := clearConnectionProperty(ssid, "802-11-wireless.mac-address"); err != nil {
+		log.Printf("failed to clear mac-address binding for %s: %v", ssid, err)
+	} else if cleared {
+		log.Printf("Cleared mac-address pin for %s (was '%s')", ssid, prev)
+	}
+	if prev, cleared, err := clearConnectionProperty(ssid, "802-11-wireless.cloned-mac-address"); err != nil {
+		log.Printf("failed to clear cloned-mac-address binding for %s: %v", ssid, err)
+	} else if cleared {
+		log.Printf("Cleared cloned-mac-address pin for %s (was '%s')", ssid, prev)
+	}
 	target := preferredClientInterface()
 	nsm.hotspotFallback = true
 
