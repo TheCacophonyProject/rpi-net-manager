@@ -386,7 +386,7 @@ func (nsm *networkStateMachine) runStateMachine() error {
 			return err
 		}
 
-		if nsm.state != netmanagerclient.NS_WIFI_SCANNING {
+		if nsm.state != netmanagerclient.NS_WIFI_SCANNING && nsm.state != netmanagerclient.NS_WIFI_CONNECTING {
 			nsm.scanFailureCount = 0
 		}
 
@@ -405,6 +405,7 @@ func (nsm *networkStateMachine) runStateMachine() error {
 				nsm.scanFailureCount++
 				if nsm.scanFailureCount < hotspotScanFailureThreshold {
 					log.Printf("Wifi scan timeout %d/%d - continuing to scan", nsm.scanFailureCount, hotspotScanFailureThreshold)
+					resetTimer(&nsm.wifiScanTimer, 10*time.Second)
 					break
 				}
 				nsm.scanFailureCount = 0
@@ -417,6 +418,7 @@ func (nsm *networkStateMachine) runStateMachine() error {
 					}
 					if minutes > 60 {
 						log.Info("Not falling back to hosting hotspot as there has not been a user interaction in 60 minutes")
+						resetTimer(&nsm.wifiScanTimer, 10*time.Second)
 						break
 					}
 					nsm.hotspotFallback = false
@@ -817,7 +819,7 @@ func (nsm *networkStateMachine) detectState() (netmanagerclient.NetworkState, st
 const (
 	router_ip                   = "192.168.4.1"
 	hostapdConfigPath           = "/etc/hostapd/hostapd-rpi-net-manager.conf"
-	hotspotScanFailureThreshold = 6
+	hotspotScanFailureThreshold = 4
 )
 
 func createDNSConfig(iface, ipRange string) error {
@@ -1167,11 +1169,31 @@ func interfaceExists(name string) bool {
 	return err == nil
 }
 
+func interfaceUsable(name string) bool {
+	if !interfaceExists(name) {
+		return false
+	}
+
+	state, err := nmcliDeviceState(name)
+	if err != nil {
+		log.Printf("failed to read NetworkManager state for %s: %v", name, err)
+		return true
+	}
+	state = strings.ToLower(strings.TrimSpace(state))
+	if state == "" {
+		return true
+	}
+	if strings.Contains(state, "unavailable") || strings.Contains(state, "unmanaged") || strings.Contains(state, "removed") {
+		return false
+	}
+	return true
+}
+
 func primaryWifiInterface() string {
-	if interfaceExists("wlan1") {
+	if interfaceUsable("wlan1") {
 		return "wlan1"
 	}
-	if interfaceExists("wlan0") {
+	if interfaceUsable("wlan0") {
 		return "wlan0"
 	}
 	return ""
@@ -1221,6 +1243,32 @@ func wifiPhyInfo(iface string) ([]string, error) {
 		return nil, fmt.Errorf("failed to read iw phy info: %w, output: %s", err, out)
 	}
 	return strings.Split(string(out), "\n"), nil
+}
+
+func nmcliDeviceState(name string) (string, error) {
+	out, err := exec.Command("nmcli", "--terse", "--fields", "DEVICE,TYPE,STATE", "device", "status").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to query device states: %w, output: %s", err, out)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ":")
+		if len(parts) < 3 {
+			continue
+		}
+		device := strings.TrimSpace(parts[0])
+		if device != name {
+			continue
+		}
+		typ := strings.TrimSpace(parts[1])
+		if typ != "wifi" {
+			return "", fmt.Errorf("%s is not a Wi-Fi device", name)
+		}
+		return strings.TrimSpace(parts[2]), nil
+	}
+	return "", nil
 }
 
 func firstAvailable5GHzChannel(lines []string) (int, bool) {
