@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,46 +63,26 @@ func saveHotspotInterfacePreference(iface string) error {
 }
 
 func (nsm *networkStateMachine) hotspotIfname() string {
-	active := ""
-	switch nsm.state {
-	case netmanagerclient.NS_WIFI_CONNECTING, netmanagerclient.NS_WIFI_CONNECTED:
-		active = nsm.currentWifiDevice()
-	default:
-		// ignore cached interface when client is idle so hotspot can reuse wlan1
-		active = ""
-	}
-
 	if override := strings.TrimSpace(nsm.hotspotPreferredInterface); override != "" {
 		if !interfaceExists(override) {
 			if nsm.hotspotInterface == override {
 				nsm.hotspotInterface = ""
 			}
 			log.Printf("Configured hotspot interface %s is unavailable; falling back to automatic selection", override)
-		} else if active == override && (nsm.state == netmanagerclient.NS_WIFI_CONNECTED || nsm.state == netmanagerclient.NS_WIFI_CONNECTING) {
-			log.Printf("Configured hotspot interface %s currently used by client connection; deferring to automatic selection", override)
 		} else {
 			if override != nsm.hotspotInterface {
-				log.Printf("Hotspot interface override set to %s (client active: %s)", override, active)
+				log.Printf("Hotspot interface override set to %s", override)
 			}
 			nsm.hotspotInterface = override
 			return nsm.hotspotInterface
 		}
 	}
 
-	if iface := selectHotspotInterface(active); iface != "" {
-		if iface != nsm.hotspotInterface {
-			log.Printf("Hotspot interface updated from %s to %s (client active: %s)", nsm.hotspotInterface, iface, active)
+	if primary := primaryWifiInterface(); primary != "" {
+		if primary != nsm.hotspotInterface {
+			log.Printf("Hotspot interface updated from %s to %s", nsm.hotspotInterface, primary)
 		}
-		nsm.hotspotInterface = iface
-		return nsm.hotspotInterface
-	}
-
-	if nsm.hotspotInterface != "" && interfaceExists(nsm.hotspotInterface) {
-		return nsm.hotspotInterface
-	}
-
-	if active != "" && interfaceExists(active) {
-		nsm.hotspotInterface = active
+		nsm.hotspotInterface = primary
 		return nsm.hotspotInterface
 	}
 
@@ -116,18 +97,12 @@ func (nsm *networkStateMachine) availableHotspotInterfaces() ([]string, error) {
 	}
 	ordered := []string{}
 	seen := map[string]struct{}{}
-	preferredOrder := []string{"wlan0", "wlan1", "wlan2"}
-	for _, candidate := range preferredOrder {
-		for _, iface := range ifaces {
-			if iface == candidate {
-				if _, ok := seen[iface]; ok {
-					continue
-				}
-				seen[iface] = struct{}{}
-				ordered = append(ordered, iface)
-			}
-		}
+
+	if primary := primaryWifiInterface(); primary != "" {
+		seen[primary] = struct{}{}
+		ordered = append(ordered, primary)
 	}
+
 	for _, iface := range ifaces {
 		if _, ok := seen[iface]; ok {
 			continue
@@ -145,13 +120,7 @@ func (nsm *networkStateMachine) setHotspotInterfacePreference(iface string) erro
 		if err != nil {
 			return err
 		}
-		found := false
-		for _, candidate := range ifaces {
-			if candidate == iface {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(ifaces, iface)
 		if !found {
 			return fmt.Errorf("%s is not an available Wi-Fi interface", iface)
 		}
@@ -244,15 +213,23 @@ func (nsm *networkStateMachine) handleStateTransition(newState netmanagerclient.
 	switch newState {
 	case netmanagerclient.NS_WIFI_SCANNING:
 		log.Println("Restarting wifi scan timer")
-		resetTimer(nsm.wifiScanTimer, 10*time.Second)
+		resetTimer(&nsm.wifiScanTimer, 10*time.Second)
 		// Reset timer for wifi to scan and connect to a network.
 		if oldState != netmanagerclient.NS_WIFI_CONNECTING {
-			resetTimer(nsm.wifiScanConnectTimer, 10*time.Minute)
+			resetTimer(&nsm.wifiScanConnectTimer, 10*time.Minute)
+		}
+
+		target := primaryWifiInterface()
+		if target != "" {
+			// Kick NM to (re)connect that device using best autoconnect profile
+			if err := runNMCli("device", "connect", target); err != nil {
+				log.Printf("device connect %s failed: %v", target, err)
+			}
 		}
 
 	case netmanagerclient.NS_HOTSPOT_RUNNING:
 		// Reset timer for hotspot when it has started up.
-		resetTimer(nsm.hotspotTimer, 5*time.Minute)
+		resetTimer(&nsm.hotspotTimer, 5*time.Minute)
 
 	case netmanagerclient.NS_WIFI_CONNECTED:
 		// Set auth retries to 2 in case it was set to 1 previously.
@@ -266,17 +243,18 @@ func (nsm *networkStateMachine) handleStateTransition(newState netmanagerclient.
 }
 
 // Utility function to safely reset a timer
-func resetTimer(timer *time.Timer, duration time.Duration) {
-	if timer == nil {
-		timer = time.NewTimer(duration)
+func resetTimer(t **time.Timer, d time.Duration) {
+	if *t == nil {
+		*t = time.NewTimer(d)
+		return
 	}
-	if !(timer).Stop() {
+	if !(*t).Stop() {
 		select {
-		case <-(*timer).C: // Drain the channel if needed
+		case <-(*t).C: // drain if needed
 		default:
 		}
 	}
-	timer.Reset(duration)
+	(*t).Reset(d)
 }
 
 func (nsm *networkStateMachine) runStateMachine() error {
@@ -284,7 +262,6 @@ func (nsm *networkStateMachine) runStateMachine() error {
 	if err := runNMCli("radio", "wifi", "on"); err != nil {
 		return err
 	}
-
 	// Timeout flags
 	wifiScanConnectTimeout := false
 	wifiScanTimeout := false
@@ -295,7 +272,7 @@ func (nsm *networkStateMachine) runStateMachine() error {
 
 	for {
 		// Look at the network setup to determine what network state the device is in.
-		newState, conName, err := detectState()
+		newState, conName, err := nsm.detectState()
 		if err != nil {
 			return err
 		}
@@ -311,7 +288,7 @@ func (nsm *networkStateMachine) runStateMachine() error {
 			return err
 		}
 
-		if nsm.state != netmanagerclient.NS_WIFI_SCANNING {
+		if nsm.state != netmanagerclient.NS_WIFI_SCANNING && nsm.state != netmanagerclient.NS_WIFI_CONNECTING {
 			nsm.scanFailureCount = 0
 		}
 
@@ -330,6 +307,7 @@ func (nsm *networkStateMachine) runStateMachine() error {
 				nsm.scanFailureCount++
 				if nsm.scanFailureCount < hotspotScanFailureThreshold {
 					log.Printf("Wifi scan timeout %d/%d - continuing to scan", nsm.scanFailureCount, hotspotScanFailureThreshold)
+					resetTimer(&nsm.wifiScanTimer, 10*time.Second)
 					break
 				}
 				nsm.scanFailureCount = 0
@@ -342,6 +320,7 @@ func (nsm *networkStateMachine) runStateMachine() error {
 					}
 					if minutes > 60 {
 						log.Info("Not falling back to hosting hotspot as there has not been a user interaction in 60 minutes")
+						resetTimer(&nsm.wifiScanTimer, 10*time.Second)
 						break
 					}
 					nsm.hotspotFallback = false
@@ -436,7 +415,7 @@ func (nsm *networkStateMachine) logBssid() {
 		}
 	}
 
-	for _, iface := range []string{"wlan0", "wlan1", "wlan2"} {
+	for _, iface := range []string{"wlan0", "wlan1"} {
 		if _, ok := seen[iface]; ok {
 			continue
 		}
@@ -470,50 +449,26 @@ func (nsm *networkStateMachine) ensurePreferredClientInterface(connection string
 	if connection == "" || connection == bushnetHotspot {
 		return
 	}
-
-	target := preferredClientInterface()
+	target := primaryWifiInterface()
 	if target == "" {
-		log.Printf("No preferred client interface available for %s; leaving existing bindings", connection)
 		return
-	}
-	if !interfaceExists(target) {
-		log.Printf("Preferred interface %s missing; skipping rebalance for %s", target, connection)
-		return
-	}
-
-	configured, err := getConnectionInterfaceName(connection)
-	if err != nil {
-		log.Printf("failed to read configured interface for %s: %v", connection, err)
-		return
-	}
-	if configured != target {
-		log.Printf("Updating interface binding for %s: '%s' -> '%s'", connection, configured, target)
-		if err := runNMCli("connection", "modify", connection, "connection.interface-name", target); err != nil {
-			log.Printf("failed to set interface for %s: %v", connection, err)
-			return
-		}
 	}
 
 	nsm.lastWifiInterface = target
 
+	// If it's already active on the wrong iface, move it using an ephemeral ifname.
 	active, err := getConnectionDevice(connection)
 	if err != nil {
 		log.Printf("failed to read active device for %s: %v", connection, err)
 		return
 	}
-	if active == "" {
-		log.Printf("Connection %s not currently active; preferred interface %s will be used on next activation", connection, target)
-		return
-	}
-	if active == target {
-		log.Printf("Connection %s already using preferred interface %s", connection, target)
+	if active == "" || active == target {
+		// Inactive: SCANNING path will `nmcli device connect <target>`
+		// Already correct: nothing to do.
 		return
 	}
 
-	log.Printf("Rebinding Wi-Fi connection %s from %s to %s", connection, active, target)
-	if err := runNMCli("connection", "down", connection); err != nil {
-		log.Printf("failed to bring connection %s down: %v", connection, err)
-	}
+	_ = runNMCli("connection", "down", connection)
 	if err := runNMCli("connection", "up", connection, "ifname", target); err != nil {
 		log.Printf("failed to bring connection %s up on %s: %v", connection, target, err)
 	}
@@ -538,28 +493,12 @@ func getConnectionDevice(connection string) (string, error) {
 	return strings.TrimSpace(line), nil
 }
 
-func getConnectionInterfaceName(connection string) (string, error) {
-	out, err := exec.Command("nmcli", "-t", "-f", "connection.interface-name", "connection", "show", connection).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("nmcli error: %w, output: %s", err, out)
-	}
-	line := strings.TrimSpace(string(out))
-	if line == "" || strings.HasSuffix(line, ":--") {
-		return "", nil
-	}
-	parts := strings.SplitN(line, ":", 2)
-	if len(parts) == 2 {
-		return strings.TrimSpace(parts[1]), nil
-	}
-	return strings.TrimSpace(line), nil
-}
-
 func (nsm *networkStateMachine) keepHotspotOnFor(keepOnFor time.Duration) {
 	newKeepOnUntil := time.Now().Add(keepOnFor)
 	if newKeepOnUntil.After(nsm.keepHotspotOnUntil) {
 		log.Println("Keep hotspot on for", keepOnFor)
 		nsm.keepHotspotOnUntil = newKeepOnUntil
-		resetTimer(nsm.hotspotTimer, keepOnFor)
+		resetTimer(&nsm.hotspotTimer, keepOnFor)
 	} else {
 		log.Printf("Keep hotspot on for %s, but already on for %s", keepOnFor, time.Until(nsm.keepHotspotOnUntil))
 	}
@@ -657,6 +596,7 @@ func (nsm *networkStateMachine) setupHotspot() error {
 					log.Printf("failed to clear hotspot channel property: %v", clearErr)
 				}
 			}
+			delete(hotspotConfig, "802-11-wireless.channel")
 			hotspotConfig["802-11-wireless.band"] = "bg"
 			channel = 0
 			if retryErr := netmanagerclient.ModifyNetworkConfig(bushnetHotspot, hotspotConfig); retryErr != nil {
@@ -701,13 +641,16 @@ func (nsm *networkStateMachine) setupHotspot() error {
 	return nil
 }
 
-func detectState() (netmanagerclient.NetworkState, string, error) {
+func (nsm *networkStateMachine) detectState() (netmanagerclient.NetworkState, string, error) {
 	out, err := exec.Command("nmcli", "radio", "wifi").CombinedOutput()
 	if err != nil {
 		return netmanagerclient.NS_ERROR, "", fmt.Errorf("error getting wifi radio state %s, err: %s", out, err)
 	}
 	radioState := strings.TrimSpace(string(out))
 	if radioState == "disabled" {
+		if nsm != nil && nsm.hostapdActive {
+			return netmanagerclient.NS_HOTSPOT_RUNNING, bushnetHotspot, nil
+		}
 		return netmanagerclient.NS_WIFI_OFF, "", nil
 	} else if radioState != "enabled" {
 		return netmanagerclient.NS_ERROR, "", fmt.Errorf("unknown radio state '%s'", radioState)
@@ -732,6 +675,9 @@ func detectState() (netmanagerclient.NetworkState, string, error) {
 
 	// No active network found, wifi is just scanning
 	if wifiConnectionName == "" {
+		if nsm != nil && nsm.hostapdActive {
+			return netmanagerclient.NS_HOTSPOT_RUNNING, bushnetHotspot, nil
+		}
 		return netmanagerclient.NS_WIFI_SCANNING, "", nil
 	}
 	// Active network is the bushnet hotspot
@@ -759,7 +705,7 @@ func detectState() (netmanagerclient.NetworkState, string, error) {
 const (
 	router_ip                   = "192.168.4.1"
 	hostapdConfigPath           = "/etc/hostapd/hostapd-rpi-net-manager.conf"
-	hotspotScanFailureThreshold = 6
+	hotspotScanFailureThreshold = 4
 )
 
 func createDNSConfig(iface, ipRange string) error {
@@ -914,9 +860,7 @@ func (nsm *networkStateMachine) monitorHostapd(done <-chan error, cmd *exec.Cmd)
 
 func (nsm *networkStateMachine) stopHostapdHotspot() error {
 	iface := nsm.hotspotInterface
-	if iface == "" {
-		iface = "wlan1"
-	}
+	// if iface is unknown, best-effort: try to restore management on common Wi-Fi ifaces
 	if nsm.hostapdCmd != nil && nsm.hostapdCmd.Process != nil {
 		if err := nsm.hostapdCmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			log.Printf("hostapd: failed to signal process: %v", err)
@@ -926,7 +870,7 @@ func (nsm *networkStateMachine) stopHostapdHotspot() error {
 		}
 		nsm.hostapdCmd = nil
 	}
-	if interfaceExists(iface) {
+	if iface != "" && interfaceExists(iface) {
 		if err := exec.Command("ip", "addr", "flush", "dev", iface).Run(); err != nil {
 			log.Printf("hostapd: failed to flush addresses on %s: %v", iface, err)
 		}
@@ -934,12 +878,19 @@ func (nsm *networkStateMachine) stopHostapdHotspot() error {
 			log.Printf("hostapd: failed to bring %s down: %v", iface, err)
 		}
 	}
-	if err := runNMCli("device", "set", iface, "managed", "yes"); err != nil {
-		log.Printf("hostapd: failed to return %s to NetworkManager: %v", iface, err)
+	if iface != "" {
+		if err := runNMCli("device", "set", iface, "managed", "yes"); err != nil {
+			log.Printf("hostapd: failed to return %s to NetworkManager: %v", iface, err)
+		}
 	}
-	if interfaceExists(iface) {
+	if iface != "" && interfaceExists(iface) {
 		if err := exec.Command("ip", "link", "set", iface, "up").Run(); err != nil {
 			log.Printf("hostapd: failed to bring %s back up: %v", iface, err)
+		}
+	}
+	for _, cand := range []string{"wlan0", "wlan1"} {
+		if cand != "" && cand != iface && interfaceExists(cand) {
+			_ = runNMCli("device", "set", cand, "managed", "yes")
 		}
 	}
 	nsm.hostapdActive = false
@@ -1096,27 +1047,6 @@ func wifiInterfaces() ([]string, error) {
 	return interfaces, nil
 }
 
-func selectHotspotInterface(active string) string {
-	candidates := []string{"wlan1", "wlan2", "wlan0"}
-	for _, candidate := range candidates {
-		if candidate == active {
-			continue
-		}
-		if !interfaceExists(candidate) {
-			log.Printf("Hotspot candidate %s unavailable", candidate)
-			continue
-		}
-		log.Printf("Hotspot selecting dedicated interface %s (client active: %s)", candidate, active)
-		return candidate
-	}
-	if interfaceExists(active) {
-		log.Printf("No dedicated hotspot interface available; falling back to active client %s", active)
-		return active
-	}
-	log.Printf("No wireless interfaces available for hotspot (client active: %s)", active)
-	return ""
-}
-
 func interfaceExists(name string) bool {
 	if name == "" {
 		return false
@@ -1125,12 +1055,31 @@ func interfaceExists(name string) bool {
 	return err == nil
 }
 
-// If wifi dongle (wlan1) is present, prefer that for client connections.
-func preferredClientInterface() string {
-	if interfaceExists("wlan1") {
+func interfaceUsable(name string) bool {
+	if !interfaceExists(name) {
+		return false
+	}
+
+	state, err := nmcliDeviceState(name)
+	if err != nil {
+		log.Printf("failed to read NetworkManager state for %s: %v", name, err)
+		return true
+	}
+	state = strings.ToLower(strings.TrimSpace(state))
+	if state == "" {
+		return true
+	}
+	if strings.Contains(state, "unavailable") || strings.Contains(state, "unmanaged") || strings.Contains(state, "removed") {
+		return false
+	}
+	return true
+}
+
+func primaryWifiInterface() string {
+	if interfaceUsable("wlan1") {
 		return "wlan1"
 	}
-	if interfaceExists("wlan0") {
+	if interfaceUsable("wlan0") {
 		return "wlan0"
 	}
 	return ""
@@ -1175,6 +1124,32 @@ func wifiPhyInfo(iface string) ([]string, error) {
 		return nil, fmt.Errorf("failed to read iw phy info: %w, output: %s", err, out)
 	}
 	return strings.Split(string(out), "\n"), nil
+}
+
+func nmcliDeviceState(name string) (string, error) {
+	out, err := exec.Command("nmcli", "--terse", "--fields", "DEVICE,TYPE,STATE", "device", "status").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to query device states: %w, output: %s", err, out)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ":")
+		if len(parts) < 3 {
+			continue
+		}
+		device := strings.TrimSpace(parts[0])
+		if device != name {
+			continue
+		}
+		typ := strings.TrimSpace(parts[1])
+		if typ != "wifi" {
+			return "", fmt.Errorf("%s is not a Wi-Fi device", name)
+		}
+		return strings.TrimSpace(parts[2]), nil
+	}
+	return "", nil
 }
 
 func firstAvailable5GHzChannel(lines []string) (int, bool) {
@@ -1333,6 +1308,8 @@ func (nsm *networkStateMachine) connectWifiNetwork(ssid string) error {
 		return fmt.Errorf("failed to prepare wifi for connection: %w", err)
 	}
 
+	nsm.hotspotFallback = false
+
 	// Ensure NetworkManager will manage any interface we previously earmarked for the hotspot.
 	if iface := nsm.hotspotInterface; iface != "" {
 		if err := runNMCli("device", "set", iface, "managed", "yes"); err != nil {
@@ -1340,12 +1317,10 @@ func (nsm *networkStateMachine) connectWifiNetwork(ssid string) error {
 		}
 	}
 
-	target := preferredClientInterface()
-	nsm.ensurePreferredClientInterface(ssid)
-	nsm.hotspotFallback = true
+	target := primaryWifiInterface()
 
 	args := []string{"connection", "up", ssid}
-	if target != "" && interfaceExists(target) {
+	if target != "" {
 		args = append(args, "ifname", target)
 	}
 
