@@ -314,14 +314,19 @@ func (nsm *networkStateMachine) runStateMachine() error {
 				if nsm.hotspotFallback {
 					// Checking if the hotspot should turn on.
 					minutes, err := getMinutesSinceHumanInteraction()
-					log.Info("Minutes since human interaction:", minutes)
 					if err != nil {
-						return fmt.Errorf("failed to get minutes since human interaction: %v", err)
-					}
-					if minutes > 60 {
-						log.Info("Not falling back to hosting hotspot as there has not been a user interaction in 60 minutes")
-						resetTimer(&nsm.wifiScanTimer, 10*time.Second)
-						break
+						// The ATtiny service might not be running. Host the
+						// hotspot anyway as it is better to have it running
+						// when not needed than to not have it when someone is
+						// at the device.
+						log.Warnf("Failed to get minutes since human interaction, hosting hotspot anyway: %v", err)
+					} else {
+						log.Info("Minutes since human interaction:", minutes)
+						if minutes > 60 {
+							log.Info("Not falling back to hosting hotspot as there has not been a user interaction in 60 minutes")
+							resetTimer(&nsm.wifiScanTimer, 10*time.Second)
+							break
+						}
 					}
 					nsm.hotspotFallback = false
 					log.Info("Enable hotspot")
