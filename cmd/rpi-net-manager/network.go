@@ -23,6 +23,7 @@ type networkStateMachine struct {
 	keepHotspotOnUntil   time.Time
 	NetworkUpdateChannel chan struct{}
 	hotspotFallback      bool
+	connectingStart      time.Time
 }
 
 func (nsm *networkStateMachine) handleStateTransition(newState netmanagerclient.NetworkState, newConName string) error {
@@ -57,6 +58,9 @@ func (nsm *networkStateMachine) handleStateTransition(newState netmanagerclient.
 	}
 
 	switch newState {
+	case netmanagerclient.NS_WIFI_CONNECTING:
+		nsm.connectingStart = time.Now()
+
 	case netmanagerclient.NS_WIFI_SCANNING:
 		log.Println("Restarting wifi scan timer")
 		resetTimer(nsm.wifiScanTimer, 10*time.Second)
@@ -74,6 +78,12 @@ func (nsm *networkStateMachine) handleStateTransition(newState netmanagerclient.
 		if err := runNMCli("connection", "modify", newConName, "connection.auth-retries", "2"); err != nil {
 			log.Printf("failed to set auth-retries to 2, '%s'", err)
 		}
+		connectingDuration := time.Duration(0)
+		if oldState == netmanagerclient.NS_WIFI_CONNECTING {
+			connectingDuration = time.Since(nsm.connectingStart)
+		}
+		// Run in the background so a slow event-reporter doesn't hold up the state machine.
+		go sendWifiConnectedEvent(newConName, string(oldState), connectingDuration)
 	}
 	return nil
 }
